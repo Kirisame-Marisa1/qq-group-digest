@@ -120,7 +120,7 @@ python scripts/ntqq_media.py --groups <群号,群号> --days 30 --workers 4
 
 # 关键词库：扫描 / 查用法 / 入库 / 看清单
 python scripts/ntqq_glossary.py --scan --days 60 --top 60
-python scripts/ntqq_glossary.py --context 车万 --limit 15
+python scripts/ntqq_glossary.py --context X --limit 15
 python scripts/ntqq_glossary.py --apply draft.json
 python scripts/ntqq_glossary.py --list
 ```
@@ -163,7 +163,7 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 - 会自动按文件头 magic 修正扩展名（QQ 经常「叫 .jpg 实为 PNG/GIF」）
 
 ### 关键词库
-群聊里有两类词不查就读不懂：**群内黑话**（东方圈的「车万/THO/打则/花赛」）和**网络流行语**（「耍起/扫码/芝士雪豹」）。
+群聊里有两类词不查就读不懂：**群内黑话**（某个圈子/展会/游戏里的专用简称）和**网络流行语**（每年都会冒出新词）。同一个词在不同群可能意思完全不同，词库为此支持一词多义。
 `ntqq_glossary.py` 负责扫描候选、拉历史用法证据、入库、渲染成可读文档；释义由 AI 结合上下文与网络考证后写入（拿不准的标「待确认」）。
 
 ---

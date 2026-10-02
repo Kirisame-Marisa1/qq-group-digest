@@ -94,11 +94,11 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 
 ## 5. 关键词库（knowledge\glossary\）
 
-群聊里有两类词必须理解才能读懂内容：**群内黑话**（如东方圈的「车万/THO/打则/花赛」）和**网络流行语**（如「耍起/扫码/芝士雪豹」）。
+群聊里有两类词必须理解才能读懂内容：**群内黑话**（某个圈子/展会/游戏里的专用简称，出了这个圈子没人懂）和**网络流行语**（每年都会冒出新词，含义还可能反转）。
 
 ```powershell
 & 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --scan --days 60 --top 60
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --context 车万 --limit 15
+& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --context X --limit 15
 & 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --apply <draft.json>
 & 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --list
 ```
@@ -111,13 +111,13 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 
 **更新时机**：每次总结顺手跑一次 `--scan`，发现新词就补。
 
-**⚠️ 同一个词在不同群可能意思完全不同**，必须结合群和上下文判断。已知例子：
-`马头` 在炒股群 = 马斯克的 SpaceX；在 LOL/电竞语境 = 选手 TheShy 的外号；在西餐语境 = 意式猪脸肉 guanciale。
+**⚠️ 同一个词在不同群可能意思完全不同**，必须结合群和上下文判断。
+同一个词完全可能在一个群指某个产品、在另一个群指某个人、在第三个群指某种食材——这三种情况本工具都实测遇到过。
 词库用 `meanings` 数组存多义（每条带 scope / meaning / origin / groups / evidence）。
 `--context <词>` 会先打印「按群分布」，先看分布再判断该用哪个义项。
 
-**⚠️ 同一个词在不同群可能意思完全不同**，必须结合群和上下文判断。已知例子：
-`马头` 在炒股群 = 马斯克的 SpaceX；在 LOL/电竞语境 = 选手 TheShy 的外号；在西餐语境 = 意式猪脸肉 guanciale。
+**⚠️ 同一个词在不同群可能意思完全不同**，必须结合群和上下文判断。
+同一个词完全可能在一个群指某个产品、在另一个群指某个人、在第三个群指某种食材——这三种情况本工具都实测遇到过。
 词库用 `meanings` 数组存多义（每条带 scope / meaning / origin / groups / evidence）。
 `--context <词>` 会先打印「按群分布」，先看分布再判断该用哪个义项。
 

@@ -4,7 +4,7 @@
 
 用法：
   ntqq_glossary.py --scan --days 60 --top 80        找候选词（群内黑话 / 网络流行语）
-  ntqq_glossary.py --context 冰冰冰 --limit 15      看某个词在历史里怎么用的
+  ntqq_glossary.py --context X --limit 15      看某个词在历史里怎么用的
   ntqq_glossary.py --apply draft.json               把释义合并进库
   ntqq_glossary.py --render                         重新生成 关键词库.md
   ntqq_glossary.py --list                           已收录词
