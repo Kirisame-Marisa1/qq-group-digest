@@ -118,6 +118,12 @@ python scripts/ntqq_report.py --class-mode --days 7
 # 图片：本机已落盘的直接用，缺的按 md5 从 CDN 取
 python scripts/ntqq_media.py --groups <群号,群号> --days 30 --workers 4
 
+# 直接问一句话（自动解析时间 + 群名 + 关键词，IDF 加权打分）
+python scripts/ntqq_report.py --ask "某群今天聊某话题了吗"
+
+# 外传前脱敏：昵称->代号、群号->群N、QQ号抹掉
+python scripts/ntqq_report.py --group <群> --days 7 --anonymize
+
 # 关键词库：扫描 / 查用法 / 入库 / 看清单
 python scripts/ntqq_glossary.py --scan --days 60 --top 60
 python scripts/ntqq_glossary.py --context X --limit 15

@@ -7,10 +7,13 @@
   ntqq_report.py --group 123456789 --hours 48
   ntqq_report.py --search 东方 --days 7
 """
-import argparse, json, os, re, sqlite3, sys
+import argparse, json, math, os, re, sqlite3, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import open_index, now_ts, fmt, parse_when, log, APP, OUTPUT, ensure_dirs
+from ntqq_core import (open_index, now_ts, fmt, parse_when, log, APP, OUTPUT, ensure_dirs,
+                       KNOW, GLOSSARY, TZ, MEDIA)
+from datetime import datetime, timedelta
+import sqlite3 as _sq3
 
 SYS_KINDS = ('system', 'empty')
 MEDIA_KINDS = ('image', 'sticker', 'audio')
@@ -67,7 +70,7 @@ NOTICE_RE = re.compile(r'通知|公告|全体成员|@全体|报名|截止|考试
 CLASS_HINT = re.compile(r'班|通知群|学习|学院|年级')
 
 
-def focus_block(rows, title='重点速览（通知 / 公告 / 长文 / 转发）', top=40):
+def focus_block(rows, title='重点速览（通知 / 公告 / 长文 / 转发）', top=40, anon=None):
     """挑出最像「通知、公告、需要知道的事」的消息。"""
     scored = []
     for r in rows:
@@ -98,30 +101,41 @@ def focus_block(rows, title='重点速览（通知 / 公告 / 长文 / 转发）
         t = (r['text'] or '').replace(chr(10), ' ⏎ ')
         if len(t) > 600:
             t = t[:600] + '…'
+        gm = (anon or {}).get(r['group_code'], {})
+        if gm:
+            who = anon_unknown(r['sender_name'], gm)
+            t = mask_names(t, gm)
+        else:
+            who = r['sender_name']
         L.append('- **%s** [%s] %s (%s)' % (fmt(ts, '%m-%d %H:%M'), r['group_name'] or r['group_code'],
-                                            r['sender_name'], '重要度 %d' % s))
+                                            who, '重要度 %d' % s))
         L.append('  > ' + t)
     L.append('')
     return chr(10).join(L) + chr(10)
 
 
-def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False):
+def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False, anon=None):
+    anon = anon or {}
+    def nm(x):
+        return anon_unknown(x, anon) if anon else x
+    def mk(text):
+        return mask_names(text, anon) if anon else text
     conv = [r for r in rows if r['kind'] not in SYS_KINDS]
     ts = [r['ts'] for r in rows]
     if not ts:
         return '', 0
     t0, t1 = min(ts), max(ts)
-    people = Counter(r['sender_name'] for r in conv if r['sender_name'] not in (None, '', '未知', '系统'))
+    people = Counter(nm(r['sender_name']) for r in conv if r['sender_name'] not in (None, '', '未知', '系统'))
     day = Counter(r['day'] for r in rows)
     hour = Counter(r['hour'] for r in rows if r['hour'] >= 0)
     bucket = set(r['ts'] // 600 for r in rows)
     kinds = Counter(r['kind'] for r in conv)
     ats = Counter()
     for r in conv:
-        for m in re.findall(r'@([^\s@|]{1,16})', r['text'] or ''):
+        for m in re.findall(r'@([^\s@|]{1,16})', mk(r['text']) or ''):
             ats[m] += 1
     L = []
-    L.append('## %s (%s)' % (name or '未知群', code))
+    L.append('## %s (%s)' % (name or '未知群', code_label(code)))
     L.append('')
     L.append('- 共 %d 条消息，其中有效对话 **%d 条**，参与 %d 人，时段 %s ~ %s'
              % (len(rows), len(conv), len(people), fmt(t0, '%m-%d %H:%M'), fmt(t1, '%m-%d %H:%M')))
@@ -143,7 +157,7 @@ def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False
         L.append('- 发言最多: ' + ', '.join('%s(%d)' % (n, c) for n, c in people.most_common(15)))
     if ats:
         L.append('- 被 @ 最多: ' + ', '.join('%s(%d)' % (n, c) for n, c in ats.most_common(8)))
-    kws = keywords([r['text'] for r in conv if r['text']])
+    kws = keywords([mk(r['text']) for r in conv if r['text']])
     if kws:
         L.append('- 高频词: ' + ', '.join('%s(%d)' % (g, c) for g, c in kws))
     L.append('')
@@ -160,20 +174,260 @@ def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False
                     '，已省略图片/表情 %d 条' % omitted if omitted > 0 else ''))
         L.append('')
         for r in show:
-            t = (r['text'] or '').replace('\n', ' ⏎ ')
+            t = mk(r['text'] or '').replace('\n', ' ⏎ ')
             if len(t) > 300:
                 t = t[:300] + '…'
             if not t:
                 continue
             if r['kind'] != 'text':
                 t = '[' + r['kind'] + '] ' + t
-            L.append('%s %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), r['sender_name'], t))
+            L.append('%s %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), nm(r['sender_name']), t))
         L.append('')
     return '\n'.join(L), len(conv)
 
 
+# ── 自然语言提问（关键词检索） ─────────────────────────────────────────────
+# 只在「结构助词/代词」处断句，绝不切 不/过/来 —— 否则「看不懂的字眼」会碎成「看」「来」
+PARTICLE = set('的了是吗呢吧啊哦嗯呀嘛着我你他她它们这那有在')
+COMMON2 = set('''这个 那个 什么 怎么 就是 不是 可以 没有 我们 你们 他们 有人 一个 现在 知道 因为 所以
+但是 然后 还是 已经 时候 感觉 真的 应该 可能 一样 出来 起来 一下 这样 那样 自己 大家 同学 老师 今天 明天 昨天
+早上 晚上 上午 下午 东西 事情 问题 时间 地方 有点 表示 直接 完全 突然 是不是 有没有 抱怨 什么 最近 刚刚'''.split())
+ASK_STOP = ['是不是', '有没有', '有没有人', '刚刚', '刚才', '今天', '昨天', '最近', '现在', '这几天',
+            '这个', '那个', '有人', '请问', '帮我', '查一下', '看看', '谁', '什么', '怎么', '为啥',
+            '为什么', '是不是有人', '在不在', '聊过', '聊了', '说过', '提到', '关于', '一下', '吗', '呢', '吧']
+ANON_DIR = os.path.join(KNOW, 'anonymize')
+
+
+def parse_time_hint(q, default_days=7):
+    now = now_ts()
+    if any(k in q for k in ('刚刚', '刚才', '方才')):
+        return now - 2 * 3600, '刚刚（近 2 小时）'
+    if '今天' in q or '今日' in q:
+        d = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        return int(d.timestamp()), '今天'
+    if '昨天' in q or '昨日' in q:
+        d = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        return int(d.timestamp()), '昨天起'
+    if '这周' in q or '本周' in q or '这个星期' in q:
+        d = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        return int((d - timedelta(days=d.weekday())).timestamp()), '本周'
+    if '最近' in q or '这几天' in q:
+        return now - int(default_days * 86400), '最近 %d 天' % default_days
+    return now - int(default_days * 86400), '最近 %d 天（未指定时间）' % default_days
+
+
+def _lcs_len(a, b):
+    """最长公共子串长度（群名匹配用）。"""
+    if not a or not b:
+        return 0
+    best = 0
+    prev = [0] * (len(b) + 1)
+    for i in range(1, len(a) + 1):
+        cur = [0] * (len(b) + 1)
+        for j in range(1, len(b) + 1):
+            if a[i - 1] == b[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                if cur[j] > best:
+                    best = cur[j]
+        prev = cur
+    return best
+
+
+def load_aliases():
+    try:
+        return json.load(open(os.path.join(APP, 'config.json'), encoding='utf-8')).get('group_aliases', {})
+    except Exception:
+        return {}
+
+
+GENERIC = set('群 的 了 是 有 在 和 与 或 东方 同好 交流 会 社 们 大家')
+
+
+def resolve_group(idx, q, topn=4):
+    """从问句猜群：先做别名展开，再按最长公共子串打分。"""
+    aliases = load_aliases()
+    qq = q
+    for k, v in aliases.items():
+        if k in qq:
+            qq = qq.replace(k, v)
+    rows = idx.execute('SELECT group_code, group_name FROM groups WHERE group_name IS NOT NULL').fetchall()
+    scored = []
+    for code, name in rows:
+        if not name:
+            continue
+        cjk_q = ''.join(c for c in qq if '\u4e00' <= c <= '\u9fff')
+        cjk_n = ''.join(c for c in name if '\u4e00' <= c <= '\u9fff')
+        a = _lcs_len(cjk_q, cjk_n)          # 中文连续命中
+        b = _lcs_len(qq, name) - a          # 英文/数字连续命中
+        # 中文权重高：靠 "tho" 蒙对不算数；「东方」「同好」这类通用词也要求连续 3 字以上才算
+        s = a * 2 + max(0, b)
+        if a >= 3:
+            s += 2
+        if s > 0:
+            scored.append((s, code, name))
+    scored.sort(reverse=True)
+    return scored[:topn]
+
+
+def extract_keywords(q):
+    known = []
+    try:
+        store = json.load(open(os.path.join(GLOSSARY, 'terms.json'), encoding='utf-8'))
+        for t in store.get('terms', {}):
+            if t.lower() in q.lower():
+                known.append(t)
+    except Exception:
+        pass
+    clean = q
+    for k, v in load_aliases().items():
+        clean = clean.replace(k, v)
+    for s in ASK_STOP:
+        clean = clean.replace(s, ' ')
+    # 在结构助词处断开，再在每段内取 2/3/4 元组
+    clean = ''.join((' ' if c in PARTICLE else c) for c in clean)
+    grams = set()
+    for run in re.findall(r'[\u4e00-\u9fff]{2,}', clean):
+        for L in (2, 3, 4):
+            for i in range(len(run) - L + 1):
+                grams.add(run[i:i + L])
+    for run in re.findall(r'[A-Za-z0-9]{2,}', clean):
+        if not run.isdigit():
+            grams.add(run.lower())
+    return known, sorted(grams, key=lambda x: -len(x))
+
+
+def ask(idx, q, t0, t1, group_codes=None, limit=40):
+    known, grams = extract_keywords(q)
+    kws = list(dict.fromkeys(known + grams))
+    # 群名本身不算检索词（转发块里每条都带群名，会把结果全污染）
+    excl = []
+    if group_codes:
+        for c in group_codes:
+            r = idx.execute('SELECT group_name FROM groups WHERE group_code=?', (c,)).fetchone()
+            if r and r[0]:
+                excl.append(r[0])
+    if excl:
+        kws = [k for k in kws if not any(k in n for n in excl)]
+    where = 'ts>=? AND ts<=?'
+    params = [t0, t1]
+    if group_codes:
+        where += ' AND group_code IN (%s)' % ','.join('?' * len(group_codes))
+        params += list(group_codes)
+    rows = idx.execute('SELECT * FROM messages WHERE ' + where, params).fetchall()
+    n = max(1, len(rows))
+    def clean_meta(t):
+        t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', t or '')
+        for n in excl:
+            t = t.replace(n, ' ')
+        return t.lower()
+    texts = [clean_meta(r['text']) for r in rows]
+    df = {}
+    for k in kws:
+        kl = k.lower()
+        df[k] = sum(1 for t in texts if kl in t)
+    # IDF 加权：越罕见的词权重越高；「tho」「东方」这类背景词自动变轻
+    idf = {k: math.log((n + 1.0) / (df[k] + 1.0)) for k in kws}
+    live = {k: idf[k] for k in kws if df[k] > 0}
+    tot = sum(live.values()) or 1.0
+    dropped = [k for k in kws if df[k] >= n * 0.5]
+    scored = []
+    for r, tl in zip(rows, texts):
+        hit = [k for k in live if k.lower() in tl]
+        if not hit:
+            continue
+        low = set(h.lower() for h in hit)
+        if len(low) < 2:            # 只命中一个词（多半是群话题词）不算数
+            continue
+        w = sum(idf[k] for k in hit)
+        scored.append((round(w / tot, 3), len(low), r['ts'], r, hit))
+    scored.sort(key=lambda x: (-x[0], -x[2]))
+    return kws, known, scored, dropped, n
+
+
+def anon_code(n):
+    s = ''
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def build_anon(idx, codes=None):
+    """昵称 -> 稳定代号（按发言量排序，存本地，跨次一致）。"""
+    os.makedirs(ANON_DIR, exist_ok=True)
+    out = {}
+    q = 'SELECT DISTINCT group_code FROM messages'
+    for (code,) in idx.execute(q):
+        if codes and code not in codes:
+            continue
+        p = os.path.join(ANON_DIR, '%s.json' % code)
+        m = {}
+        if os.path.exists(p):
+            try:
+                m = json.load(open(p, encoding='utf-8'))
+            except Exception:
+                m = {}
+        used = set(m.values())
+        n = 1
+        for name, c in idx.execute("SELECT sender_name, COUNT(*) c FROM messages WHERE group_code=? AND sender_name NOT IN ('系统','未知','') GROUP BY sender_name ORDER BY c DESC", (code,)):
+            if name and name not in m:
+                while ('用户' + anon_code(n)) in used:
+                    n += 1
+                m[name] = '用户' + anon_code(n)
+                used.add(m[name])
+        if m:
+            json.dump(m, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+        out[code] = m
+    return out
+
+
+QQNUM = re.compile(r'(?<!\d)\d{6,11}(?!\d)')
+FWD_NAME = re.compile(r'(\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*)([^:\n]{1,24})(:)')
+AT_NAME = re.compile(r'@([^\s@|]{1,16})')
+_ANON_EXTRA = {}
+_ANON_CTR = [0]
+ANON_LABELS = {}          # 群号 -> 群N（脱敏时用）
+
+
+def code_label(code):
+    """脱敏模式下把群号换成「群N」，否则原样返回。"""
+    return ANON_LABELS.get(code, code)
+
+
+def anon_unknown(name, gm):
+    """本群映射里没有的名字（多见于转发的原作者）也发一个代号。"""
+    name = name.strip()
+    if not name or name.startswith('用户') or name.startswith('匿名'):
+        return name
+    if gm.get(name):
+        return gm[name]
+    if name not in _ANON_EXTRA:
+        _ANON_CTR[0] += 1
+        _ANON_EXTRA[name] = '匿名%d' % _ANON_CTR[0]
+    return _ANON_EXTRA[name]
+
+
+def mask_names(text, gm):
+    if not text:
+        return text
+    for k, v in gm.items():
+        if k and k in text:
+            text = text.replace(k, v)
+    text = FWD_NAME.sub(lambda m: m.group(1) + anon_unknown(m.group(2), gm) + m.group(3), text)
+    text = AT_NAME.sub(lambda m: '@' + anon_unknown(m.group(1), gm), text)
+    return scrub(text)
+
+
+def scrub(text):
+    if not text:
+        return text
+    return QQNUM.sub('【QQ号】', text)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--ask', default=None, help='自然语言提问，例如「某群今天聊某话题了吗」')
+    ap.add_argument('--anonymize', action='store_true', help='昵称->代号，并抹掉 QQ 号（外传用）')
     ap.add_argument('--active', action='store_true')
     ap.add_argument('--group', action='append', default=[])
     ap.add_argument('--search', default=None)
@@ -238,6 +492,83 @@ def main():
 
     result = {'cutoff_ts': cutoff, 'window': [t0, t1], 'groups': []}
 
+    if a.ask:
+        a_t0, label = parse_time_hint(a.ask, a.days or 7)
+        if a.hours:
+            a_t0 = now - int(a.hours * 3600); label = '近 %g 小时' % a.hours
+        if a.days:
+            a_t0 = now - int(a.days * 86400); label = '近 %g 天' % a.days
+        cand = resolve_group(idx, a.ask)
+        gcodes = None; gdesc = '全部群'
+        if a.group:
+            picked = []
+            for s in a.group:
+                for r in idx.execute('SELECT group_code, group_name FROM groups'):
+                    if str(r[0]) == s or (r[1] and s in r[1]):
+                        picked.append(r[0])
+            if picked:
+                gcodes = list(dict.fromkeys(picked))
+                gdesc = '、'.join(str(c) for c in gcodes)
+        elif cand and cand[0][0] >= 5 and (len(cand) == 1 or cand[0][0] >= cand[1][0] + 2):
+            gcodes = [cand[0][1]]; gdesc = cand[0][2]
+        kws, known, scored, dropped, nwin = ask(idx, a.ask, a_t0, t1, gcodes)
+        out.append('## 提问: %s' % a.ask)
+        out.append('')
+        out.append('- 解析出的时间范围: **%s**（%s ~ %s）' % (label, fmt(a_t0, '%m-%d %H:%M'), fmt(t1, '%m-%d %H:%M')))
+        out.append('- 解析出的群: **%s**' % gdesc)
+        if cand:
+            out.append('- 群名候选（分数）: %s' % '、'.join('%s(%d)' % (n, s) for s, c, n in cand))
+        out.append('- 窗口内消息 %d 条，检索词 %d 个: %s' % (nwin, len(kws), ('、'.join(kws) if kws else '（无）')))
+        if dropped:
+            out.append('- 被当背景噪音剔除的高频词: %s' % '、'.join(dropped[:12]))
+        if known:
+            out.append('- 词库里认识的词: %s' % '、'.join(known))
+        out.append('')
+        strong = [x for x in scored if x[0] >= 0.45 and x[1] >= 2]
+        if strong:
+            out.append('**结论：是。命中 %d 条，其中强相关 %d 条。**' % (len(scored), len(strong)))
+        elif scored:
+            out.append('**结论：有沾边的 %d 条，但没有强相关的（可能不是你要问的那件事）。**' % len(scored))
+        else:
+            out.append('**结论：没有。**在解析出的时间范围和群里，**一条相关消息都没找到。**')
+        out.append('')
+        if gcodes and not strong:
+            _, _, other, _, _ = ask(idx, a.ask, a_t0, t1, None)
+            other = [x for x in other if x[3]['group_code'] not in gcodes and x[0] >= 0.30 and x[1] >= 2][:10]
+            if other:
+                out.append('> ⚠️ 但**其他群**里有 %d 条内容相近，可能是你记错群了：' % len(other))
+                out.append('')
+                for cov, kn, tsx, r, hit in other[:10]:
+                    t = (r['text'] or '').replace(chr(10), ' ⏎ ')
+                    if len(t) > 180:
+                        t = t[:180] + '…'
+                    out.append('- **%s** [%s] %s (相关度 %.2f)' % (fmt(tsx, '%m-%d %H:%M'),
+                                                               (r['group_name'] or r['group_code']), r['sender_name'], cov))
+                    out.append('  > ' + t)
+                out.append('')
+        shown = (strong or scored)[:a.max_msgs]
+        for cov, known_n, tsx, r, hit in shown:
+            t = (r['text'] or '').replace(chr(10), ' ⏎ ')
+            if len(t) > 260:
+                t = t[:260] + '…'
+            out.append('- **%s** [%s] %s (相关度 %.2f) ｜命中 %s' % (fmt(tsx, '%m-%d %H:%M'),
+                                                                 (r['group_name'] or r['group_code']),
+                                                                 r['sender_name'], cov, '/'.join(hit[:6])))
+            out.append('  > ' + t)
+        dist = Counter(r['group_name'] for _, _, _, r, _ in scored)
+        if dist:
+            out.append('')
+            out.append('- 命中分布: ' + ', '.join('%s=%d' % (g or '-', c) for g, c in dist.most_common(12)))
+        result['ask'] = a.ask
+        result['ask_hits'] = len(scored)
+        text = chr(10).join(out)
+        if a.out:
+            open(a.out, 'w', encoding='utf-8').write(text)
+            log('[out] %s' % a.out)
+        else:
+            print(text)
+        return
+
     if a.media_list:
         mrows = idx.execute('SELECT * FROM media WHERE ts>=? AND ts<=? ORDER BY ts', (t0, t1)).fetchall()
         want = None
@@ -298,6 +629,11 @@ def main():
             targets = [(r['group_code'], r['group_name']) for r in idx.execute(
                 'SELECT group_code, group_name FROM groups WHERE last_ts>=? ORDER BY n DESC', (t0,))]
 
+        ANON = build_anon(idx, set(c for c, _ in targets)) if a.anonymize else {}
+        if a.anonymize:
+            for i, (c, _n) in enumerate(targets, 1):
+                ANON_LABELS[c] = '群%d' % i
+
         prepared = []
         for code, name in targets:
             rows = idx.execute('SELECT * FROM messages WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts',
@@ -318,21 +654,21 @@ def main():
             out.append('|---|---|---|---|---|')
             for nconv, ntot, code, name, rows, _ in prepared:
                 np = len(set(r['sender_name'] for r in rows if r['sender_name'] not in ('系统', '未知')))
-                out.append('| %s (%s) | %d | %d | %d | %s |' % (name or '-', code, nconv, ntot, np,
+                out.append('| %s (%s) | %d | %d | %d | %s |' % (name or '-', code_label(code), nconv, ntot, np,
                                                            fmt(max(r['ts'] for r in rows), '%m-%d %H:%M')))
             out.append('')
         if not a.no_focus:
             allrows = []
             for _, _, _, _, rows, _ in prepared:
                 allrows.extend(rows)
-            fb = focus_block(allrows, top=(60 if a.class_mode else 25))
+            fb = focus_block(allrows, top=(60 if a.class_mode else 25), anon=ANON)
             if fb:
                 out.append(fb)
                 if a.class_mode:
                     out.append('> 上表只列「重要度 >= 2」的消息；下面是逐群详述。')
                     out.append('')
         for nconv, ntot, code, name, rows, prev in prepared:
-            txt, _ = block(code, name, rows, a.max_msgs, a.show_media, prev, a.brief)
+            txt, _ = block(code, name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
             out.append(txt)
             result['groups'].append({'code': code, 'name': name, 'conv': nconv, 'n': ntot,
                                      'first': min(r['ts'] for r in rows), 'last': max(r['ts'] for r in rows)})
