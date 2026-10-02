@@ -41,7 +41,7 @@ def main():
     pages = ((min(total, int(a.max_mb * 1048576)) if a.max_mb else total) - EXT_HEADER) // PAGE_SIZE
     d = os.path.dirname(os.path.abspath(a.out))
     if d: os.makedirs(d, exist_ok=True)
-    print('src=%s size=%.2fGB pages=%d' % (src, total / 123456789.0, pages))
+    print('src=%s size=%.2fGB pages=%d' % (src, total / 1073741824.0, pages))
     t0 = time.time()
     with open(src, 'rb') as fi, open(a.out, 'wb') as fo:
         fi.seek(EXT_HEADER)
@@ -57,7 +57,7 @@ def main():
                 page += b'\x00' * (PAGE_SIZE - len(page))
             fo.write(page)
     sz = os.path.getsize(a.out)
-    print('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 123456789.0))
+    print('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
     with open(a.out, 'rb') as f:
         h = f.read(32)
     print('   header: page_size=%d reserved=%d db_size_pages=%d' % (

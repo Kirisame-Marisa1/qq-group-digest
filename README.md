@@ -81,21 +81,22 @@ python scripts/ntqq_build.py --days 30
 python scripts/ntqq_report.py --active --hours 6 --brief --out ../output/_tmp.md
 ```
 
-Windows 上用 `D:\Python38\python.exe` 之类的绝对路径更稳，并设 `PYTHONIOENCODING=utf-8`。
+Windows 上建议用绝对路径调用解释器，并设 `PYTHONIOENCODING=utf-8`，避免中文乱码。
 
 ### 目录布局
 
-脚本默认把产物放在 `D:\QQChatCache`（可在 `config.json` 的 `root` 改）：
+脚本默认把产物放在 `D:\QQChatCache`（可把 `config.json` 的 `root` 改成任意位置，
+Linux/macOS 上也一样，只要那个目录可写）：
 
 ```
-D:\QQChatCache\
-├─ app\            本仓库（scripts\ schema\ config.json SKILL.md）
-├─ data\           明文库 plain\ + 索引 index.db
-├─ keys\           密钥缓存
-├─ media\          下载到的图片
-├─ knowledge\glossary\  关键词库
-├─ output\         总结产出
-└─ run\            临时文件
+<root>/
+├─ app/            本仓库（scripts/ schema/ config.json SKILL.md）
+├─ data/           明文库 plain/ + 索引 index.db
+├─ keys/           密钥缓存
+├─ media/          下载到的图片
+├─ knowledge/glossary/  关键词库
+├─ output/         总结产出
+└─ run/            临时文件
 ```
 
 ---
@@ -129,6 +130,12 @@ python scripts/ntqq_glossary.py --scan --days 60 --top 60
 python scripts/ntqq_glossary.py --context X --limit 15
 python scripts/ntqq_glossary.py --apply draft.json
 python scripts/ntqq_glossary.py --list
+
+# 群变更：新入群 / 已退群 / 改名（report 与 build 里也会自动跑）
+python scripts/ntqq_group_state.py --scan
+python scripts/ntqq_group_state.py --list
+python scripts/ntqq_group_state.py --list --in-group
+python scripts/ntqq_group_state.py --left <群号或群名片段>    # 手工补记一个已退的群
 ```
 
 ---
@@ -145,8 +152,14 @@ python scripts/ntqq_glossary.py --list
 ### 抽取层
 - 群消息主表秒级时间戳、发送者 QQ/UID、群名片/昵称（群名片 → 全局昵称 → QQ 号 回退）
 - 消息正文是 Protobuf（`40800` 列），自带一个**无依赖的 wire 解码器**
-- **转发消息展开**：合并转发的正文在 `40900` 列（repeated，每条子记录就是一条被转发的原始消息）
+- **转发消息展开**：转发正文在 `40900` 列（repeated，每条子记录就是一条被转发的原始消息），
+  而每条子记录的 `40800` **本身又是 repeated**——它的每个叶子条目才是消息段
+  （`45002=1` 文本在 `45101`、`45002=2` 图片在 `45402` 文件名）。取文本要遍历全部叶子，
+  只取第一条会拿到引用段/图片段，导致**转发正文整段丢失**
 - 消息类型：文本 / 图片 / 表情 / 视频 / 音频 / 文件 / 引用 / 转发 / 系统
+- **群变更登记**：把当前 `group_list` 与上一次的记录比对，报出 **新入群 / 已退群 /
+  退群后回归 / 群改名**。首次只建基线；若一次扫描读到的群数掉了一半以上，判为库没读出来，
+  **挂起退群判定**，避免批量误报
 
 ### 报告层
 - 逐日 / 逐时分布、参与人数、活跃时长、消息类型构成

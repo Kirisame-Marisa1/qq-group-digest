@@ -248,8 +248,11 @@ def decode_body(blob, sc):
 
 
 # 45002 = 消息段内容类型（本机样本实测）
+#   10 = 新版 QQ 的「嵌套转发/卡片」段。实测这类叶子条目**在本地库里没有内容**
+#        （既没有 45101 文本，也没有子 40800/40900），所以它只能落到 other、正文为空。
+#        全库转发子条目里这类约占 3%，属于**数据本身缺失**，不是解码问题。
 CT_KIND = {1: 'text', 2: 'image', 3: 'file', 6: 'sticker', 7: 'reply',
-           8: 'system', 16: 'forward', 5: 'video', 4: 'audio'}
+           8: 'system', 10: 'other', 16: 'forward', 5: 'video', 4: 'audio'}
 
 
 def classify(ct, f, sc):
@@ -289,6 +292,64 @@ def classify(ct, f, sc):
 FWD_FIELD = '40900'
 
 
+def forward_text(f, sc):
+    """从转发子记录里取出正文与类型。
+
+    踩过的坑（2026-10-02 实测）：一条 40900 子记录的结构是
+        {40001, 40020, 40050, 40093(昵称), 40800: <重复多段>}
+    而 **40800 是本层的 repeated**，它的每个叶子条目才是「消息段」：
+        45002=1 文本 → 正文在 45101
+        45002=2 图片 → 正文在 45402（文件名）
+        45002=7 引用 → 只有 47413 引用摘要，正文在**兄弟**条目里
+    早期版本写成 `f.get(40800)[0]` 再丢给 decode_body，取到的往往是
+    「类型 7 的引用段」或「类型 2 的图片段」，于是转发正文**整段丢失**——
+    实测某 60 条聚合转发解出 10 条、条条 text 为空，而原文其实是完整的。
+    """
+    B = sc['body_40800']
+    parts, kinds = [], []
+    for seg in f.get(40800, []):
+        try:
+            s = {}
+            for a, b, c in pb_fields(seg):
+                s.setdefault(a, []).append(c)
+        except Exception:
+            continue
+        ct = s.get(B['content_type'], [0])[0]
+        t = _s(s.get(B['text'], [b''])[0]).strip()
+        if not t:
+            for key in ('sys_content', 'reply_summary', 'video_text', 'call_desc', 'filename'):
+                vv = s.get(B[key])
+                if vv:
+                    tt = _s(vv[0]).strip()
+                    if tt:
+                        t = tt
+                        break
+        k = classify(ct, s, sc)
+        # 引用段本身没正文，它的正文在兄弟条目里；只有整条别无内容时才退回引用摘要
+        if k != 'reply':
+            kinds.append(k)
+        if t:
+            parts.append(t)
+    if not parts:
+        # 全部叶子都没正文时，才退回引用摘要/第一条的类型
+        for seg in f.get(40800, []):
+            try:
+                s = {}
+                for a, b, c in pb_fields(seg):
+                    s.setdefault(a, []).append(c)
+            except Exception:
+                continue
+            t = _s(s.get(B['reply_summary'], [b''])[0]).strip()
+            if t:
+                parts.append('引用: ' + t)
+                break
+    txt = ' | '.join(parts).strip()
+    for pref in ('text', 'forward', 'file', 'video', 'image', 'sticker', 'audio', 'call', 'system'):
+        if pref in kinds:
+            return pref, txt
+    return (kinds[0] if kinds else 'other'), txt
+
+
 def decode_forward(blob, sc, limit=60):
     if not blob:
         return []
@@ -303,8 +364,7 @@ def decode_forward(blob, sc, limit=60):
                     f.setdefault(a, []).append(c)
             except Exception:
                 continue
-            body = f.get(40800)
-            kind, text = decode_body(body[0], sc) if body else ('', '')
+            kind, text = forward_text(f, sc)
             out.append({
                 'uid': _s(f.get(40020, [b''])[0]),
                 'qq': f.get(40033, [0])[0],
@@ -321,8 +381,13 @@ def decode_forward(blob, sc, limit=60):
     return out
 
 
-def format_forward(items, per_line=140):
-    """把转发内容排成可读文本。"""
+def format_forward(items, per_line=400):
+    """把转发内容排成可读文本。
+
+    per_line 的来历：早期是 140 字符，实测**会截掉转发正文**——今天 47 个群的报告里
+    有 81 处转发正文被 `…` 砍掉（转发是这些群的主力形式，砍掉就等于丢内容）。
+    改成 400 后，长通知类转发基本完整；索引体积增加约 0.5%，可以接受。
+    """
     if not items:
         return ''
     lines = ['[转发聊天记录 %d 条]' % len(items)]

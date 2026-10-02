@@ -325,6 +325,32 @@ def main():
     if bad_days:
         log('[index] !! 有 %d 个「群-日」读不出来（已跳过）: %s'
             % (len(bad_days), ', '.join('%s@%s' % x for x in bad_days[:10])))
+
+    # ── 群变更登记：自动识别新入群 / 已退群 / 退群后回归 / 改名 ────────────
+    try:
+        import ntqq_group_state as GS
+        res = GS.scan()
+        if not res.get('ok'):
+            log('[groups] 跳过：%s' % res.get('reason'))
+        else:
+            R = res['registry']['groups']
+            log('[groups] 在群 %d 个；历史登记 %d 个（含已退）'
+                % (sum(1 for r in R.values() if r.get('in_member_list')), len(R)))
+            if res.get('suspect_snapshot'):
+                log('[groups] [warn] 读到的群数异常偏少，已挂起退群判定')
+            if res.get('first_ever'):
+                log('[groups] 首次建立基线，本次不报新入群')
+            for r in res['new']:
+                log('[groups] 🆕 新入群: %s %s' % (r['code'], r.get('name') or ''))
+            for r in res['returned']:
+                log('[groups] ↩ 退群后又回来: %s %s' % (r['code'], r.get('name') or ''))
+            for r in res['left']:
+                log('[groups] 🚪 判定已退群: %s %s' % (r['code'], r.get('name') or ''))
+            for code, old, new in res['renamed']:
+                log('[groups] ✏ 改名: %s %s -> %s' % (code, old, new))
+    except Exception as e:                                  # 登记表坏了不该拖垮建索引
+        log('[groups] [warn] 群变更扫描失败（不影响索引）: %r' % e)
+
     idx.close()
 
 

@@ -4,8 +4,8 @@
 
 用法示例：
   ntqq_report.py --active --hours 6 --brief
-  ntqq_report.py --group 123456789 --hours 48
-  ntqq_report.py --search 东方 --days 7
+  ntqq_report.py --group <群号> --hours 48
+  ntqq_report.py --search <关键词> --days 7
 """
 import argparse, json, math, os, re, sqlite3, sys
 from collections import Counter
@@ -445,6 +445,8 @@ def main():
     ap.add_argument('--class-mode', action='store_true', help='班群模式：重点速览 + 不限篇幅逐条')
     ap.add_argument('--no-focus', action='store_true', help='不输出重点速览')
     ap.add_argument('--media-list', default=None, help='把窗口内图片候选写成 TSV')
+    ap.add_argument('--no-group-state', action='store_true',
+                    help='不在报告里输出「群变更」（新入群/退群/改名）段落')
     a = ap.parse_args()
 
     idx = open_index(); idx.row_factory = sqlite3.Row
@@ -475,6 +477,43 @@ def main():
     span = max(60, t1 - t0)
 
     out = []
+    # ── 群变更提示（新入群 / 退群 / 回归 / 改名）─────────────────────────────
+    #  不排除任何群、不做分类——只把「跟你上次看的时候比变了什么」打在最前面。
+    state_lines = []
+    if not a.no_group_state:
+        try:
+            import ntqq_group_state as GS
+            sres = GS.scan()
+            if not sres.get('ok'):
+                state_lines.append('> ⚠ 群变更未生效：%s' % sres.get('reason'))
+            else:
+                if sres.get('suspect_snapshot'):
+                    state_lines.append('> ⚠ 本次读到的群数异常偏少，已挂起退群判定（疑似 group_info.db 未读出）')
+                if sres['new']:
+                    state_lines.append('> 🆕 **新入群 %d 个**：%s'
+                                       % (len(sres['new']),
+                                          '、'.join('%s(%s)' % (r.get('name') or '?', r['code']) for r in sres['new'][:10])))
+                if sres['returned']:
+                    state_lines.append('> ↩ 退群后又回来 %d 个：%s'
+                                       % (len(sres['returned']),
+                                          '、'.join('%s(%s)' % (r.get('name') or '?', r['code']) for r in sres['returned'][:10])))
+                if sres['left']:
+                    state_lines.append('> 🚪 本次判定已退群 %d 个：%s'
+                                       % (len(sres['left']),
+                                          '、'.join('%s(%s)' % (r.get('name') or '?', r['code']) for r in sres['left'][:10])))
+                if sres['renamed']:
+                    state_lines.append('> ✏ 群名变更 %d 个：%s'
+                                       % (len(sres['renamed']),
+                                          '、'.join('%s→%s' % (a_, b_) for _c, a_, b_ in sres['renamed'][:6])))
+        except Exception as e:
+            state_lines.append('> ⚠ 群变更读取失败：%r' % e)
+
+    if not a.no_group_state:
+        for ln in state_lines:
+            out.append(ln)
+        if state_lines:
+            out.append('')
+
     out.append('# QQ 群聊报告')
     out.append('')
     out.append('> **数据截止 %s**（索引构建于 %s，距现在 %d 分钟；本次扫描 %s 行，读取错误 %s 次）'
@@ -490,7 +529,6 @@ def main():
     out.append('- 窗口内总消息 %d 条；上一个等长窗口 %d 条；趋势 %s（%+d）'
                % (cur_n, prev_n, '↑' if cur_n > prev_n else ('↓' if cur_n < prev_n else '→'), cur_n - prev_n))
     out.append('')
-
     result = {'cutoff_ts': cutoff, 'window': [t0, t1], 'groups': []}
 
     if a.ask:
@@ -637,6 +675,7 @@ def main():
             if not a.group and cg:
                 a.group = [str(x) for x in cg]
         if a.group:
+            # 显式点名的群尊重用户意图，不过滤
             allg = idx.execute('SELECT group_code, group_name FROM groups ORDER BY group_code').fetchall()
             targets = []
             for s in a.group:

@@ -1,4 +1,4 @@
-﻿---
+---
 name: qq-group-digest
 description: 本地解密 QQ 聊天数据库并总结群聊。当用户问「QQ群聊了什么」「总结一下XX群」「今天各群都在聊什么」「现在群里在聊什么」「某关键词在哪个群出现过」或要求统计群消息量/趋势/话题/观点时使用。全程本地、不登录、不联网；也用于查询/更新群聊关键词库。
 compatibility: {}
@@ -22,16 +22,19 @@ compatibility: {}
 4. **图片必须报覆盖率**：「本窗口图片 N 张，本机可取 X 张，CDN 补到 Y 张，已识别 Z 张」。
 5. **凡是可能外传的产出，一律先脱敏**（见第 9 节）。
 6. **回答「刚刚 / 刚才 / 现在 / 今天」这类问题前，必须先重跑 `ntqq_build.py` 刷新索引。**
-   拿一份几十分钟前的旧索引答「刚刚」，等于在赌——**实测已经赌输过一次**
-   （某群群那两条抱怨是 某个时点 发的，我用的索引建于 12:13，直接答了"没有"）。
+   拿一份几十分钟前的旧索引答「刚刚」等于在赌——**实测已经赌输过一次**：
+   索引建于 12:13，而两条关键消息发于 12:18/12:19，于是直接答了「没有」。
 7. **不要只看命中的那一条，要看上下文（`--ctx`）。**
-   群聊是一来一回的：「核心用户都在 qq 群」+「某句抱怨」单看哪条都不完整，
+   群聊是一来一回的：「核心用户都在 qq 群」+「t群加多了看不过来」单看哪条都不完整，
    合起来才是"嫌群多、看不过来"。**孤立的关键词会骗人。**
+8. **不要试图区分「群助手」。** 那个状态**只有服务端有、客户端不落盘**，做不成自动识别
+   （排查依据见第 6.5 节）。**2026-10-02 已把这个功能整体删掉**——报告不做任何群排除，
+   全部群都看。群变更（新入群/退群/改名）的自动识别仍然有效，见第 6.5 节。
 
-## 1. 目录布局（全部在 D:\QQChatCache）
+## 1. 目录布局（默认根目录 `<root>`，可用 config.json 的 root 改）
 
 ```
-D:\QQChatCache\
+<root>\
 ├─ app\            代码：scripts\  schema\  config.json
 ├─ data\           解密后的明文库 plain\  +  滚动索引 index.db
 ├─ keys\           密钥缓存 key_map.json
@@ -44,33 +47,42 @@ D:\QQChatCache\
 
 **所有新增产物都放这里，不要写到桌面或别处。** 明文库可随时整目录删除，下次自动重建。
 
-Python：`D:\Python38\python.exe`（已装 cryptography / protobuf，**不要装 jieba**）。
+Python 3.10+，需 `cryptography` 与 `protobuf` 两个包。**不要装 jieba**（本工具不依赖分词库）。
 
 ## 2. 标准流程
 
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
-cd 'D:\QQChatCache\app'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_build.py' --days 30
+cd '<repo>'
+python 'scripts\ntqq_build.py' --days 30
 ```
 
 出报告（**加 --out 写到 output\，再用 read 分段读**）：
 
 ```powershell
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --active --hours 6 --brief --max-msgs 40 --out 'D:\QQChatCache\output\_tmp.md'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --class-mode --days 7 --out '...'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --group <群号> --days 2 --out '...'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --search <关键词> --days 7 --out '...'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --list-groups
+python 'scripts\ntqq_report.py' --active --hours 6 --brief --max-msgs 40 --out '<root>\output\_tmp.md'
+python 'scripts\ntqq_report.py' --class-mode --days 7 --out '...'
+python 'scripts\ntqq_report.py' --group <群号> --days 2 --out '...'
+python 'scripts\ntqq_report.py' --search <关键词> --days 7 --out '...'
+python 'scripts\ntqq_report.py' --list-groups
 ```
+
+> ⚠️ **`--max-msgs` 默认 150，而且非 `--brief` 时取的是「最前 150 条」，还没有任何省略提示。**
+> 实测踩过：24 小时窗口有 411 条有效对话，报告只印了最前的 150 条，最后一条停在 12:16，
+> 而标题仍写「共 411 条有效对话」——**看起来像完整报告，实际被静默截断**。
+> 所以问「今天/最近聊了什么」时**必须二选一**：
+> - 明确窗口 + 放开条数：`--since 'YYYY-MM-DD 00:00' --max-msgs 3000`（推荐）
+> - 或者只要最近的：`--brief`（它取的是**最后** N 条）
+>
+> 报告出来后先看最后一条的时间戳是否等于「数据截止」，不等就是被截断了。
 
 ### 2.1 直接问一句话（关键词检索）
 
 用户问「XX 群刚才是不是有人在说 YY」「Z 群今天聊 W 了吗」，**用 --ask，不要手工翻报告**：
 
 ```powershell
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --ask '某群今天聊某话题了吗'
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --ask '某校的某群是不是有人抱怨消息看不过来' --days 7 --ctx 4
+python 'scripts\ntqq_report.py' --ask '某群今天聊某话题了吗'
+python 'scripts\ntqq_report.py' --ask '某校的某群是不是有人抱怨消息看不过来' --days 7 --ctx 4
 ```
 
 **先刷新再问**（见铁律 6）：`ntqq_build.py --days 30` 只要 30 秒，别省这一步。
@@ -100,7 +112,7 @@ cd 'D:\QQChatCache\app'
 ### 2.2 外传前脱敏
 
 ```powershell
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_report.py' --group <群> --days 7 --anonymize --out '...'
+python 'scripts\ntqq_report.py' --group <群> --days 7 --anonymize --out '...'
 ```
 
 --ctx N 控制每条命中带几条上下文（默认 3）。**判断语义时调大一点（4~6）**。
@@ -125,22 +137,26 @@ cd 'D:\QQChatCache\app'
 
 ## 4. 图片：不用点开也能拿到
 
-**实测结论**：腾讯群图可按 md5 直接取原图，**不需要登录/cookie/签名**：
+**实测结论**：群图有三级取法，**默认走第 2 级**，实测 **63/63 = 100% 且逐张 md5 与消息声明一致**：
 
-```
-https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
-```
-
-- 下载回来的文件 MD5 正好等于消息里的 md5（就是原图），字节数与消息声明的 filesize 一致。
-- 实测成功率约 **80%**，失败全是 404（服务端已清理）。
-- QQ 只把你**点开过**的图落到 `nt_data\Pic\`，本机命中率可能只有 5%；直连能把大部分补回来。
+1. 本机 `nt_data\Pic\`：只有你点开/渲染过的图才落盘（实测命中 ~13%），
+   而且**多数只是缩略图**——实测 16 张本机图里 15 张 md5 与消息声明不符。
+2. **多媒体 CDN（主力，原图）**：消息元素 `40800` 里就存着
+   `45816` = host（`multimedia.nt.qq.com.cn`）与 `45802/45803/45804` = `/download?appid=1407&fileid=…&spec={0,720,198}`，
+   **spec=0 是原图**。但这条 URL **不带 rkey，直接请求返回 HTTP 400**。
+   rkey 是 QQ 客户端**进程内存**里的会话凭据 → `ntqq_key.scan_rkeys()` 只读扫出来，
+   拼成 `https://<host><path>&rkey=<rkey>` 即可（元素里 `45518` 声明有效期 31 天）。
+3. 旧 gchat 兜底：`https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0`，免鉴权但较新的图大量 404。
 
 ```powershell
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_media.py' --groups <群号,群号> --days 30 --workers 4
+python 'scripts\ntqq_media.py' --groups <群号,群号> --days 30 --workers 4
 ```
 
-- 先查本机 Pic（命中不走网络），缺的走 CDN，**按文件头 magic 修正扩展名**（QQ 常「叫 .jpg 实为 PNG/GIF」）。
-- 输出 `media\manifest.jsonl`：md5 / 来源 / 路径 / 群 / 发送者 / 时间。
+- **前提：QQ 必须在运行**（rkey 只在内存里）；`ntqq_media.py` 会自动识别并缓存 6 小时。
+- 默认顺序 = 多媒体 CDN → 本机 Pic → gchat；想要「快但可能是缩略图」加 `--prefer-local`。
+- 走 CDN 的每张图**保存前都校验 md5**，不符即判失败，不会把缩略图当原图存下来。
+- **按文件头 magic 修正扩展名**（QQ 常「叫 .jpg 实为 PNG/GIF」）。
+- 输出 `media\manifest.jsonl`：md5 / 来源(`db`/`local`/`ok`) / 路径 / 群 / 发送者 / 时间。
 
 **哪些图必须识**（优先级从高到低）：
 1. 出现在 @全体成员 / 通知 / 公告 附近的图
@@ -155,10 +171,10 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 群聊里有两类词必须理解才能读懂内容：**群内黑话**（某个圈子/展会/游戏里的专用简称，出了这个圈子没人懂）和**网络流行语**（每年都会冒出新词，含义还可能反转）。
 
 ```powershell
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --scan --days 60 --top 60
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --context X --limit 15
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --apply <draft.json>
-& 'D:\Python38\python.exe' -X utf8 'scripts\ntqq_glossary.py' --list
+python 'scripts\ntqq_glossary.py' --scan --days 60 --top 60
+python 'scripts\ntqq_glossary.py' --context X --limit 15
+python 'scripts\ntqq_glossary.py' --apply <draft.json>
+python 'scripts\ntqq_glossary.py' --list
 ```
 
 **编写流程**：
@@ -186,7 +202,95 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 - **重点速览**（通知/公告/@全体/报名截止/考试安排/资料分享）**单独成节排在最前**。
 - **班群格外详细**：篇幅不设上限，逐条写「谁、何时、说了什么、结论是什么」；学校事务逐条列；涉及用户的 @ 单独高亮；昵称原文保留。班群号写在 config.json 的 class_groups。
 - **多群场景**：每个有对话的群都要回答到「主要聊了什么」，按热度排序。
-- **转发消息必须展开**：正文在 40900 列（repeated，每条子记录就是一条被转发的原始消息）。
+- **转发消息必须展开**。字段结构**分两层，别再搞错**（2026-10-02 踩过，见下）：
+  - `group_msg_table."40900"` 是 repeated，**每条子记录 = 一条被转发的原始消息**；
+  - 但子记录的 `40800` **本身又是 repeated**，它的每个**叶子条目**才是消息段：
+    `45002=1` 文本→正文在 `45101`；`45002=2` 图片→正文在 `45402`（文件名）；
+    `45002=7` 引用→**没有正文**，正文在兄弟条目里。
+  - ⚠️ **坑**：旧版写成 `f.get(40800)[0]` 再丢给 `decode_body`，取到的往往是「类型 7 的引用段」
+    或「类型 2 的图片段」，于是**转发正文整段丢失**——实测某 60 条聚合转发解出 10 条、
+    **条条 text 为空**，而原文其实是完整的；报告里表现为一堆 `[时间] 昵称: ` 后面空着。
+    正确做法在建 `forward_text()`（`ntqq_core.py`）：遍历 `f[40800]` 的**全部**叶子条目取文本。
+  - 判断有没有踩到：抽一条 `转发聊天记录 N 条` 的行，后面若**全是空的昵称+冒号**，就是这个问题。
+  - **每条转发正文的截断长度也已放宽**：`format_forward(per_line=...)` 早期是 140 字符，
+    实测今天 47 个群的报告里有 **81 处转发正文被 `…` 砍掉**（转发是这些群的主力形式），
+    已改成 **400**；索引体积从 **92 MB → 102 MB（+11%）**。
+  - ⚠️ 报告渲染层（`block()`）还会对整行做 **250 字符的显示截断**，所以**要拿完整转发正文，
+    请直接读 `index.db` 的 `messages.text`，不要从报告里抠**。
+  - **实测修复效果**（同一批 4000 条转发消息 / 5310 条转发子条目）：
+    修复前正文非空 **0 条（0.0%）**，修复后 **5099 条（96.0%）**。
+  - 剩下约 3% 仍为空：那些叶子条目的 `45002=10`（新版嵌套转发/卡片），
+    **本地库里确实没有内容**（连子 `40800`/`40900` 都没有），属于数据缺失、不是解析问题，
+    遇到时照实说「内容不可知」，不要猜。
+
+## 6.5 群变更登记：新入群 / 已退群 / 改名
+
+工具：`scripts\ntqq_group_state.py`，文件 `run\group_registry.json`（长期登记表）+ `run\group_snapshot.json`（每次扫描的现状）。
+
+### 先说结论：「群助手」做不了，已整体删除
+
+**2026-10-02 已把「群助手」分类功能从代码里删掉**（用户决定：不能自动识别就没意义，
+不做人工维护）。以下是当初的排查依据，留档避免以后重复踩——**不要再试图推断它**：
+
+| 查了什么 | 结果 |
+|---|---|
+| `group_info.db` 的 `group_list` 全部 53 列 | 每列取值分布都对不上折叠选择 |
+| `group_detail_info_ver1`（118 列）、`group_ext_list`（35 列） | 同上，没有能当折叠标志的列 |
+| `nt_msg.db` 的 `hidden_session_storage_table_v1` | 空表 |
+| `nt_msg.db` 的 `service_assistant_contact` | 空表（那是「服务号」，名字像但不是） |
+| `nt_msg.db` 的 `recent_contact_v3_table` | 本机只存了 **1** 个群，不是会话列表 |
+| `nt_qq` 目录下 **64162 个文件** 搜 `群助手`/`groupAssist`/`foldGroup` | **0 命中**（mmkv 只有 4096 字节，装不下 161 个群的分类） |
+
+结论：**「收进群助手」只有服务端有，客户端不落盘，本地读不出来。** 报告因此**不做任何群排除**。
+
+### 用法
+
+```powershell
+cd '<repo>'
+$py = 'python'
+
+python scripts\ntqq_group_state.py --scan           # 扫描 + 差分（report/build 里也会自动跑）
+python scripts\ntqq_group_state.py --list           # 列出登记表里的全部群
+python scripts\ntqq_group_state.py --list --in-group  # 只看当前在群的
+python scripts\ntqq_group_state.py --left 123456789   # 手工补记一个已退的群（也吃群名子串）
+```
+
+### 自动识别怎么工作
+
+依据是本机 `group_info.db` 的 `group_list`（= 当前已加入的群）+ `group_detail_info_ver1`（含历史群）：
+
+| 情况 | 判定 |
+|---|---|
+| 群号首次出现在 `group_list` | 🆕 **新入群** |
+| 群号从两张表里都消失 | 🚪 **已退群**（记 `left_ts`） |
+| 退群后又出现 | ↩ **回归**（清掉 `left_ts`） |
+| 群名变了 | ✏ **改名** |
+| 只在 `group_detail_info_ver1` 里 | 记为「不在群」的历史群，**不算新加群** |
+
+**首次运行只建基线，不报「新入群」**（否则一上来就把已有 161 个群全报一遍）。
+**防呆**：一次扫描如果「在群数」掉到登记表的一半以下，判为疑似 `group_info.db` 没读出来，
+**挂起退群判定**（宁可漏报，也不要几百条假「退群」），并在报告里打警告。
+
+### 报告里的开关
+
+`ntqq_report.py` **不做任何群排除**，全部群都看。群变更提醒默认输出：
+
+```powershell
+--no-group-state    # 不输出「群变更」（新入群/退群/改名）段落
+```
+
+报告头部会印出：🆕 新入群、🚪 本次判定退群、✏ 改名、以及疑似快照异常时的警告。
+
+### 测试
+
+行为夹具（8 个场景、19 条断言，含快照损坏防呆）：
+
+```powershell
+python 'run/test_groups.py'
+```
+
+它把路径常量指到临时目录、自己造 `group_info.db` 夹具，**不碰真实登记表**。
+
 
 ## 7. 版本漂移后重新解析私有表结构
 
@@ -197,7 +301,7 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 
 ## 9. 外传脱敏规则（重要，改代码/文档时也要遵守）
 
-**我们自己用的那份（D:\QQChatCache\）不用管，可以带真名真号。**
+**本地自用的一份不用管，可以带真名真号。**
 **只要可能外传——发给别人、打包给别人、传 GitHub、贴到任何地方——就必须脱敏，无一例外。**
 
 ### 9.1 产出脱敏
@@ -218,7 +322,7 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 - [ ] QQ 号 → 占位符
 - [ ] 真实群名 / 群号 → 占位符
 - [ ] 本机用户名 / GitHub 用户名 → 无
-- [ ] `C:\Users\...` 绝对路径 → 无
+- [ ] `<用户目录>` 绝对路径 → 无
 - [ ] **词库里的具体词条不要在文档里当例子**（要说就抽象成「某产品 / 某人 / 某食材」）
 - [ ] 聊天内容、总结 md、密钥文件 **根本不打包**
 - [ ] 改完**抓线上 raw 内容再扫一遍**，不要只看本地
