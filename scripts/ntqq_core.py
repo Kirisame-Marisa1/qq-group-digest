@@ -32,8 +32,19 @@ def _read_config_raw():
         return {}
 
 
+def _default_root():
+    """数据根目录的默认值：Windows 用 D:/QQChatCache，其他平台用 ~/.qqchatcache。
+
+    以前硬写 D:/QQChatCache，在 Linux/macOS 上等于往根目录里塞文件，所以改成按平台取。
+    任何情况下都建议自己在 config.json 里写死 root。
+    """
+    if os.name == 'nt':
+        return 'D:/QQChatCache'
+    return os.path.expanduser('~/.qqchatcache')
+
+
 _raw = _read_config_raw()
-ROOT = str(_raw.get('root') or 'D:/QQChatCache').replace('\\', '/')
+ROOT = str(_raw.get('root') or _default_root()).replace('\\', '/')
 
 DATA = os.path.join(ROOT, 'data')
 PLAIN = os.path.join(DATA, 'plain')
@@ -50,7 +61,7 @@ TZ = timezone(timedelta(hours=8))              # 群聊按北京时间理解
 EXT_HEADER_BYTES, PAGE_SIZE, SALT_SIZE, RESERVE_BYTES, IV_BYTES = 1024, 4096, 16, 48, 16
 
 DEFAULT_CONFIG = {
-    "root": "D:/QQChatCache",
+    "root": "",                       # 空 = 用 _default_root()（Windows: D:/QQChatCache）
     "account": "",
     "qq_exe": "C:/Program Files/Tencent/QQNT/QQ.exe",
     "index_days": 30,

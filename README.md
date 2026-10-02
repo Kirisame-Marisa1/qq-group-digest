@@ -85,8 +85,9 @@ Windows 上建议用绝对路径调用解释器，并设 `PYTHONIOENCODING=utf-8
 
 ### 目录布局
 
-脚本默认把产物放在 `D:\QQChatCache`（可把 `config.json` 的 `root` 改成任意位置，
-Linux/macOS 上也一样，只要那个目录可写）：
+脚本把产物都放在**数据根目录**下（`config.json` 的 `root` 指定，想放哪都行，只要可写）。
+`root` 留空时的默认值：**Windows 用 `D:/QQChatCache`，Linux/macOS 用 `~/.qqchatcache`**。
+下面用 `<root>` 代指：
 
 ```
 <root>/
