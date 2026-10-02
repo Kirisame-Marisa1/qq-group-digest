@@ -187,7 +187,7 @@ def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False
 
 
 # ── 自然语言提问（关键词检索） ─────────────────────────────────────────────
-# 只在「结构助词/代词」处断句，绝不切 不/过/来 —— 否则「看不懂的字眼」会碎成「看」「来」
+# 只在「结构助词/代词」处断句，绝不切 不/过/来 —— 否则「看不过来」会碎成「看」「来」
 PARTICLE = set('的了是吗呢吧啊哦嗯呀嘛着我你他她它们这那有在')
 COMMON2 = set('''这个 那个 什么 怎么 就是 不是 可以 没有 我们 你们 他们 有人 一个 现在 知道 因为 所以
 但是 然后 还是 已经 时候 感觉 真的 应该 可能 一样 出来 起来 一下 这样 那样 自己 大家 同学 老师 今天 明天 昨天
@@ -313,7 +313,7 @@ def ask(idx, q, t0, t1, group_codes=None, limit=40):
     if group_codes:
         where += ' AND group_code IN (%s)' % ','.join('?' * len(group_codes))
         params += list(group_codes)
-    rows = idx.execute('SELECT * FROM messages WHERE ' + where, params).fetchall()
+    rows = idx.execute('SELECT * FROM messages WHERE ' + where + ' ORDER BY group_code, ts', params).fetchall()
     n = max(1, len(rows))
     def clean_meta(t):
         t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', t or '')
@@ -331,17 +331,17 @@ def ask(idx, q, t0, t1, group_codes=None, limit=40):
     tot = sum(live.values()) or 1.0
     dropped = [k for k in kws if df[k] >= n * 0.5]
     scored = []
-    for r, tl in zip(rows, texts):
+    for i, (r, tl) in enumerate(zip(rows, texts)):
         hit = [k for k in live if k.lower() in tl]
         if not hit:
             continue
         low = set(h.lower() for h in hit)
-        if len(low) < 2:            # 只命中一个词（多半是群话题词）不算数
+        if len(low) < 2:
             continue
         w = sum(idf[k] for k in hit)
-        scored.append((round(w / tot, 3), len(low), r['ts'], r, hit))
+        scored.append((round(w / tot, 3), len(low), r['ts'], r, hit, i))
     scored.sort(key=lambda x: (-x[0], -x[2]))
-    return kws, known, scored, dropped, n
+    return kws, known, scored, dropped, n, rows
 
 
 def anon_code(n):
@@ -427,6 +427,7 @@ def scrub(text):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ask', default=None, help='自然语言提问，例如「某群今天聊某话题了吗」')
+    ap.add_argument('--ctx', type=int, default=3, help='--ask 时每条命中前后带几条上下文（默认 3）')
     ap.add_argument('--anonymize', action='store_true', help='昵称->代号，并抹掉 QQ 号（外传用）')
     ap.add_argument('--active', action='store_true')
     ap.add_argument('--group', action='append', default=[])
@@ -511,7 +512,15 @@ def main():
                 gdesc = '、'.join(str(c) for c in gcodes)
         elif cand and cand[0][0] >= 5 and (len(cand) == 1 or cand[0][0] >= cand[1][0] + 2):
             gcodes = [cand[0][1]]; gdesc = cand[0][2]
-        kws, known, scored, dropped, nwin = ask(idx, a.ask, a_t0, t1, gcodes)
+        kws, known, scored, dropped, nwin, arows = ask(idx, a.ask, a_t0, t1, gcodes)
+        meta = {k: v for k, v in idx.execute('SELECT key, value FROM meta')}
+        built = int(meta.get('built_at') or 0)
+        age = now - built if built else 0
+        if any(k in a.ask for k in ('刚刚', '刚才', '现在', '今天')) and age > 600:
+            out.append('> ⚠️ **索引是 %d 分钟前建的，不是实时的。**'
+                       '你问的是「刚刚/今天」，最新消息可能还没进索引——'
+                       '**先重跑 ntqq_build.py 再回答**，否则可能漏掉。' % (age // 60))
+            out.append('')
         out.append('## 提问: %s' % a.ask)
         out.append('')
         out.append('- 解析出的时间范围: **%s**（%s ~ %s）' % (label, fmt(a_t0, '%m-%d %H:%M'), fmt(t1, '%m-%d %H:%M')))
@@ -533,12 +542,12 @@ def main():
             out.append('**结论：没有。**在解析出的时间范围和群里，**一条相关消息都没找到。**')
         out.append('')
         if gcodes and not strong:
-            _, _, other, _, _ = ask(idx, a.ask, a_t0, t1, None)
+            _, _, other, _, _, _ = ask(idx, a.ask, a_t0, t1, None)
             other = [x for x in other if x[3]['group_code'] not in gcodes and x[0] >= 0.30 and x[1] >= 2][:10]
             if other:
                 out.append('> ⚠️ 但**其他群**里有 %d 条内容相近，可能是你记错群了：' % len(other))
                 out.append('')
-                for cov, kn, tsx, r, hit in other[:10]:
+                for cov, kn, tsx, r, hit, _i in other[:10]:
                     t = (r['text'] or '').replace(chr(10), ' ⏎ ')
                     if len(t) > 180:
                         t = t[:180] + '…'
@@ -547,15 +556,28 @@ def main():
                     out.append('  > ' + t)
                 out.append('')
         shown = (strong or scored)[:a.max_msgs]
-        for cov, known_n, tsx, r, hit in shown:
-            t = (r['text'] or '').replace(chr(10), ' ⏎ ')
-            if len(t) > 260:
-                t = t[:260] + '…'
+        for cov, known_n, tsx, r, hit, idx_at in shown:
             out.append('- **%s** [%s] %s (相关度 %.2f) ｜命中 %s' % (fmt(tsx, '%m-%d %H:%M'),
                                                                  (r['group_name'] or r['group_code']),
                                                                  r['sender_name'], cov, '/'.join(hit[:6])))
-            out.append('  > ' + t)
-        dist = Counter(r['group_name'] for _, _, _, r, _ in scored)
+            lo = max(0, idx_at - a.ctx)
+            hi = min(len(arows), idx_at + a.ctx + 1)
+            if a.ctx > 0 and (hi - lo) > 1:
+                out.append('  > **上下文（前后各 %d 条，★ 为命中的那条）:**' % a.ctx)
+                for j in range(lo, hi):
+                    rr = arows[j]
+                    tt = (rr['text'] or '').replace(chr(10), ' ⏎ ')
+                    if len(tt) > 220:
+                        tt = tt[:220] + '…'
+                    if not tt:
+                        continue
+                    out.append('  > %s %s %s: %s' % ('★' if j == idx_at else '·',
+                                                     fmt(rr['ts'], '%m-%d %H:%M'),
+                                                     rr['sender_name'], tt))
+            else:
+                tt = (r['text'] or '').replace(chr(10), ' ⏎ ')
+                out.append('  > ' + (tt[:260] + '…' if len(tt) > 260 else tt))
+        dist = Counter(x[3]['group_name'] for x in scored)
         if dist:
             out.append('')
             out.append('- 命中分布: ' + ', '.join('%s=%d' % (g or '-', c) for g, c in dist.most_common(12)))
