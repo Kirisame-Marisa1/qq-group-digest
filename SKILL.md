@@ -116,6 +116,11 @@ https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
 词库用 `meanings` 数组存多义（每条带 scope / meaning / origin / groups / evidence）。
 `--context <词>` 会先打印「按群分布」，先看分布再判断该用哪个义项。
 
+**⚠️ 同一个词在不同群可能意思完全不同**，必须结合群和上下文判断。已知例子：
+`马头` 在炒股群 = 马斯克的 SpaceX；在 LOL/电竞语境 = 选手 TheShy 的外号；在西餐语境 = 意式猪脸肉 guanciale。
+词库用 `meanings` 数组存多义（每条带 scope / meaning / origin / groups / evidence）。
+`--context <词>` 会先打印「按群分布」，先看分布再判断该用哪个义项。
+
 ## 6. 输出格式
 
 五件事：**聊了什么 / 聊了多少多久 / 话题关键词 / 观点与结论 / 量化与趋势**。
