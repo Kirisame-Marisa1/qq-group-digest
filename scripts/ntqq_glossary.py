@@ -129,12 +129,19 @@ def show_scan(keep, top):
         print('  %-14s 共%4d次  出现在%2d个群  首见 %s' % (x['term'], x['total'], x['groups'], fmt(x['first'], '%m-%d')))
 
 
-def context(term, limit, days=90):
+def context(term, limit, days=90, groups=None):
     idx = open_index(); idx.row_factory = __import__('sqlite3').Row
     cut = now_ts() - int(days * 86400)
-    rows = idx.execute("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? ORDER BY ts",
-                       (cut, '%' + term + '%')).fetchall()
+    if groups:
+        q = ("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? AND group_code IN (%s) ORDER BY ts"
+             % ','.join('?' * len(groups)))
+        rows = idx.execute(q, [cut, '%' + term + '%'] + list(groups)).fetchall()
+    else:
+        rows = idx.execute("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? ORDER BY ts",
+                           (cut, '%' + term + '%')).fetchall()
     print('=== 「%s」近 %d 天出现 %d 次，前 %d 条 ===' % (term, days, len(rows), limit))
+    from collections import Counter
+    print('  按群分布: ' + ', '.join('%s=%d' % (g or '-', c) for g, c in Counter(r['group_name'] for r in rows).most_common(8)))
     for r in rows[:limit]:
         t = (r['text'] or '').replace(chr(10), ' ')
         i = t.find(term)
@@ -171,17 +178,31 @@ def render():
         L.append('## %s（%d）' % (typ, len(by[typ])))
         L.append('')
         for k, v in sorted(by[typ], key=lambda x: -(x[1].get('total') or 0)):
-            L.append('### %s' % k)
-            L.append('- 含义：%s' % (v.get('meaning') or '（待补）'))
-            if v.get('origin'):
-                L.append('- 来源/考证：%s' % v['origin'])
-            if v.get('groups'):
-                L.append('- 出现群：%s' % '、'.join(str(g) for g in v['groups']))
-            if v.get('evidence'):
-                L.append('- 用法举例：')
-                for e in v['evidence'][:4]:
-                    L.append('  - %s' % e)
-            L.append('')
+            multi = bool(v.get('meanings'))
+            L.append('### %s%s' % (k, '   ⚠️ 一词多义' if multi else ''))
+            if multi:
+                L.append('> 这个词在不同群里意思不同，**必须结合所在群和上下文判断**。')
+                L.append('')
+                for m in v['meanings']:
+                    L.append('- **[%s]** %s' % (m.get('scope', '通用'), m.get('meaning', '')))
+                    if m.get('origin'):
+                        L.append('  - 来源：%s' % m['origin'])
+                    if m.get('groups'):
+                        L.append('  - 出现群：%s' % '、'.join(str(g) for g in m['groups']))
+                    for e in (m.get('evidence') or [])[:4]:
+                        L.append('  - 例：%s' % e)
+                    L.append('')
+            else:
+                L.append('- 含义：%s' % (v.get('meaning') or '（待补）'))
+                if v.get('origin'):
+                    L.append('- 来源/考证：%s' % v['origin'])
+                if v.get('groups'):
+                    L.append('- 出现群：%s' % '、'.join(str(g) for g in v['groups']))
+                if v.get('evidence'):
+                    L.append('- 用法举例：')
+                    for e in v['evidence'][:4]:
+                        L.append('  - %s' % e)
+                L.append('')
     ensure_dirs()
     with open(DOC, 'w', encoding='utf-8') as f:
         f.write(chr(10).join(L))
@@ -207,7 +228,8 @@ def main():
     if a.render:
         render(); return
     if a.context:
-        context(a.context, a.limit, a.days); return
+        gs2 = [int(x) for x in a.groups.split(',')] if a.groups else None
+        context(a.context, a.limit, a.days, gs2); return
     if a.list:
         st = load_store()
         for k, v in sorted(st['terms'].items()):

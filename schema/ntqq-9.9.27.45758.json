@@ -87,6 +87,5 @@
     "8": "system",
     "11": "forward",
     "16": "mixed"
-  },
-  "note": "structure 字段会在首次运行 ntqq_build.py 时按本机库自动补全（用于版本漂移检测）"
+  }
 }
