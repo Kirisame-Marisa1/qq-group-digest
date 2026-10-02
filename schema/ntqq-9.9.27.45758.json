@@ -1,0 +1,92 @@
+{
+  "qq_version": "9.9.27.45758",
+  "generated_at": "2026-10-02",
+  "provenance": "字段语义来源：QQBackup/nt_msg_db_util (GPL-3.0) 的实测字段文档 + 本机样本复核",
+  "header_bytes": 1024,
+  "sqlcipher": {
+    "page_size": 4096,
+    "reserved_bytes": 80,
+    "crypto_reserve": 48,
+    "hmac": "HMAC-SHA1",
+    "kdf": "PBKDF2-HMAC-SHA512",
+    "kdf_iter": 4000,
+    "key_len": 32,
+    "mode": "WAL"
+  },
+  "group_msg_table": {
+    "rowid": "40001",
+    "seq": "40003",
+    "direction": "40013",
+    "sender_uid": "40020",
+    "group_code_str": "40021",
+    "group_key": "40027",
+    "group_uin": "40030",
+    "sender_qq": "40033",
+    "time": "40050",
+    "day": "40058",
+    "card": "40090",
+    "nick": "40093",
+    "msg_type": "40011",
+    "subtype": "40012",
+    "body": "40800",
+    "reply_seq": "40850",
+    "at_flag": "40100"
+  },
+  "body_40800": {
+    "body_content": 40800,
+    "content_type": 45002,
+    "text": 45101,
+    "filename": 45402,
+    "filesize": 45405,
+    "file_ext": 45419,
+    "reply_summary": 47413,
+    "video_text": 47602,
+    "call_desc": 48153,
+    "sys_content": 80900,
+    "sender_uid": 40020,
+    "msg_id": 45001
+  },
+  "name_sources": {
+    "group_list": {
+      "db": "group_info.db",
+      "table": "group_list",
+      "code": "60001",
+      "name": "60007"
+    },
+    "group_detail": {
+      "db": "group_info.db",
+      "table": "group_detail_info_ver1",
+      "code": "60001",
+      "name": "60007"
+    },
+    "group_member": {
+      "db": "group_info.db",
+      "table": "group_member3",
+      "group": "60001",
+      "uid": "1000",
+      "qq": "1002",
+      "card": "64003",
+      "nick": "20002"
+    },
+    "profile": {
+      "db": "profile_info.db",
+      "table": "profile_info_v6",
+      "uid": "1000",
+      "qq": "1002",
+      "nick": "20002"
+    }
+  },
+  "kind_map": {
+    "1": "text",
+    "2": "image",
+    "3": "file",
+    "4": "audio",
+    "5": "video",
+    "6": "sticker",
+    "7": "reply",
+    "8": "system",
+    "11": "forward",
+    "16": "mixed"
+  },
+  "note": "structure 字段会在首次运行 ntqq_build.py 时按本机库自动补全（用于版本漂移检测）"
+}

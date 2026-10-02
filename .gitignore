@@ -1,0 +1,9 @@
+config.json
+*.pyc
+__pycache__/
+output/
+data/
+media/
+keys/
+run/
+*.zip
