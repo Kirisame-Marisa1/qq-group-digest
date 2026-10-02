@@ -18,7 +18,7 @@ from ntqq_core import (load_config, load_schema, find_schema, ensure_dirs, ensur
 
 def flush_media(idx, mbuf):
     if mbuf:
-        idx.executemany('INSERT OR REPLACE INTO media VALUES (%s)' % ','.join('?' * 8), mbuf)
+        idx.executemany('INSERT OR REPLACE INTO media VALUES (%s)' % ','.join('?' * 10), mbuf)
         mbuf.clear()
 
 KEYS = ['seq', 'direction', 'sender_uid', 'group_code_str', 'group_key',
@@ -216,9 +216,19 @@ def main():
                         if sf.get(45002, [0])[0] == 2:
                             mm = sf.get(45406, [b''])[0]
                             if isinstance(mm, (bytes, bytearray)) and len(mm) == 16:
+                                # 顺带记下多媒体 CDN 的 host 与 spec=0（原图）路径，
+                                # 供 ntqq_media.py 配合内存里的 rkey 取原图。
+                                hv = sf.get(45816, [b''])[0]
+                                host = hv.decode('utf8', 'replace') if isinstance(hv, (bytes, bytearray)) else ''
+                                p0 = ''
+                                for fno in (45802, 45803, 45804):
+                                    pv = sf.get(fno, [b''])[0]
+                                    if isinstance(pv, (bytes, bytearray)) and b'spec=0' in pv:
+                                        p0 = pv.decode('utf8', 'replace')
+                                        break
                                 mbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '',
                                              g, group_names.get(g, ''), name, mm.hex(),
-                                             sf.get(45405, [0])[0] or 0))
+                                             sf.get(45405, [0])[0] or 0, host, p0))
                 except Exception:
                     pass
             # 转发：把 40900 里的原始消息展开，正文接在后面

@@ -137,6 +137,55 @@ def derive_enc_key(passphrase, salt):
     return hashlib.pbkdf2_hmac('sha512', passphrase, salt, KDF_ITER, KEY_SIZE)
 
 
+def scan_rkeys(limit=400):
+    """只读扫描 QQ 进程内存，提取图片下载用的 rkey 候选（按出现次数降序）。
+
+    实测（2026-10-02）：图片元素里只有 host + /download?appid=…&spec=0，**不带 rkey**，
+    直接请求返回 HTTP 400；把内存里扫到的 rkey 拼上去、取 spec=0 才能拿到原图，
+    md5 与消息声明一致。这里只做 OpenProcess / ReadProcessMemory，不注入、不写内存。
+    """
+    import re as _re
+    from collections import Counter as _Counter
+    pid = find_qq_main_pid()
+    handle = windll.kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
+    if not handle:
+        print('  [rkey] OpenProcess 失败 err=%d' % ctypes.GetLastError())
+        return []
+    cnt = _Counter()
+    scanned = 0
+    t0 = time.time()
+    mbi = MEMORY_BASIC_INFORMATION(); addr = 0
+    try:
+        while True:
+            if windll.kernel32.VirtualQueryEx(handle, ctypes.c_void_p(addr), byref(mbi), sizeof(mbi)) == 0:
+                break
+            base = mbi.BaseAddress or 0
+            size = mbi.RegionSize
+            if (mbi.State == MEM_COMMIT and (mbi.Protect & 0xFF) in READABLE_PROTS
+                    and 0 < size <= MAX_REGION):
+                data = read_mem(handle, base, size)
+                if data:
+                    scanned += len(data)
+                    off = 0
+                    while True:
+                        i = data.find(b'&rkey=', off)
+                        if i == -1:
+                            break
+                        m = _re.match(rb'&rkey=([A-Za-z0-9_\-]{10,200})', data[i:i + 210])
+                        if m:
+                            cnt[m.group(1).decode()] += 1
+                        off = i + 1
+            nxt = base + size
+            if nxt <= addr or nxt >= 0x7FFFFFFFFFFF:
+                break
+            addr = nxt
+    finally:
+        windll.kernel32.CloseHandle(handle)
+    print('  [rkey] 扫描 %.0f MB / %.1fs，候选 %d 个'
+          % (scanned / 1048576.0, time.time() - t0, len(cnt)))
+    return [k for k, _ in cnt.most_common(limit)]
+
+
 def scan_by_salt(handle, salt_hexes):
     needles = [(sh.encode('ascii'), sh) for sh in salt_hexes]
     results = {}

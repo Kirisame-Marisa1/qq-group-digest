@@ -344,6 +344,41 @@ def gchat_image_url(md5_hex):
     return 'https://gchat.qpic.cn/gchatpic_new/0/0-0-%s/0' % md5_hex.upper()
 
 
+# ── rkey 缓存（2026-10-02）──────────────────────────────────────────────────
+# 实测：图片元素里存着 host(45816) + /download?appid=1407&fileid=…&spec=0(45802/3/4)，
+# 但**不带 rkey**，直接请求返回 HTTP 400。rkey 是客户端进程内存里的会话凭据，
+# 用 ntqq_key.scan_rkeys() 只读扫描即可拿到；拼上去、取 spec=0 就能拿到原图
+# （实测 25/25 张 md5 与消息声明完全一致）。
+# rkey 会过期，缓存 6 小时后强制重扫。
+RKEY_CACHE = os.path.join(os.path.dirname(INDEX_DB), 'rkey.json')
+RKEY_TTL = 6 * 3600
+
+
+def load_rkey(max_age=RKEY_TTL):
+    """读缓存的 rkey；不存在或过期返回 None。"""
+    try:
+        with open(RKEY_CACHE, encoding='utf-8') as f:
+            d = json.load(f)
+        if now_ts() - int(d.get('ts') or 0) <= max_age:
+            return d.get('rkey') or None
+    except Exception:
+        pass
+    return None
+
+
+def save_rkey(rkey):
+    try:
+        with open(RKEY_CACHE, 'w', encoding='utf-8') as f:
+            json.dump({'rkey': rkey, 'ts': now_ts()}, f)
+    except Exception:
+        pass
+
+
+def db_image_url(host, path, rkey):
+    """拼多媒体 CDN 的原图地址：https://<host><path>&rkey=<rkey>"""
+    return 'https://%s%s&rkey=%s' % (host, path, rkey)
+
+
 def sniff_ext(data):
     if data[:3] == b'\xff\xd8\xff':
         return '.jpg'
@@ -573,7 +608,8 @@ CREATE TABLE IF NOT EXISTS groups(
 CREATE TABLE IF NOT EXISTS media(
   msg_id INTEGER PRIMARY KEY,
   ts INTEGER, day TEXT, group_code INTEGER, group_name TEXT,
-  sender_name TEXT, md5 TEXT, declared_size INTEGER
+  sender_name TEXT, md5 TEXT, declared_size INTEGER,
+  host TEXT, path TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_media_ts ON media(ts);
 CREATE INDEX IF NOT EXISTS idx_media_group ON media(group_code, ts);
@@ -584,4 +620,11 @@ def open_index():
     ensure_dirs()
     con = sqlite3.connect(INDEX_DB)
     con.executescript(INDEX_SCHEMA)
+    # 迁移（2026-10-02）：老索引的 media 没有 host/path。这两列是从消息元素里
+    # 抠出来的「多媒体 CDN 原图地址」，配合内存里的 rkey 才能取到未点开过的图。
+    cols = {r[1] for r in con.execute('PRAGMA table_info(media)')}
+    for c in ('host', 'path'):
+        if c not in cols:
+            con.execute('ALTER TABLE media ADD COLUMN %s TEXT' % c)
+    con.commit()
     return con
