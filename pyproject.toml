@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qq-group-digest"
+version = "0.2.0"
+description = "把 QQ 群聊与私聊变成可检索、可统计、可总结的本地资料库（全程本地、只读、不登录）"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "cryptography>=41.0.0",
+]
+keywords = ["qq", "ntqq", "sqlcipher", "sqlite", "digest", "fts5", "ai-skill"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.scripts]
+ntqq-init = "ntqq_init:main"
+ntqq-build = "ntqq_build:main"
+ntqq-report = "ntqq_report:main"
+ntqq-key = "ntqq_key:main"
+ntqq-decrypt = "ntqq_decrypt:main"
+ntqq-media = "ntqq_media:main"
+ntqq-glossary = "ntqq_glossary:main"
+ntqq-group-state = "ntqq_group_state:main"
+ntqq-gap = "ntqq_gap:main"
+ntqq-crawler = "ntqq_crawler:main"
+
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+    "ntqq_core",
+    "ntqq_init",
+    "ntqq_build",
+    "ntqq_report",
+    "ntqq_key",
+    "ntqq_decrypt",
+    "ntqq_media",
+    "ntqq_glossary",
+    "ntqq_group_state",
+    "ntqq_gap",
+    "ntqq_crawler",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "scripts"]

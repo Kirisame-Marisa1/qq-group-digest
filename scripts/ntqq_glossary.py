@@ -12,7 +12,7 @@
 import argparse, json, os, re, sys, time
 from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import open_index, ensure_dirs, GLOSSARY, now_ts, fmt, log
+from ntqq_core import open_index, ensure_dirs, GLOSSARY, now_ts, fmt, log, log_debug
 
 STORE = os.path.join(GLOSSARY, 'terms.json')
 DOC = os.path.join(GLOSSARY, '关键词库.md')
@@ -26,9 +26,10 @@ COMMON = set('这个 那个 什么 怎么 就是 不是 可以 没有 我们 你
 def load_store():
     if os.path.exists(STORE):
         try:
-            return json.load(open(STORE, encoding='utf-8'))
-        except Exception:
-            pass
+            with open(STORE, encoding='utf-8') as fh:
+                return json.load(fh)
+        except Exception as e:
+            log_debug('读取 terms.json 失败: %r' % e)
     return {'terms': {}, 'meta': {}}
 
 

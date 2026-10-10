@@ -54,6 +54,10 @@ Python 3.10+，需 `cryptography` 与 `protobuf` 两个包。**不要装 jieba**
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 cd '<repo>'
+# 首次使用可运行一键初始化（自动扫描本机 QQ 号与 QQ.exe 并生成 config.json + 目录）
+python 'scripts\ntqq_init.py'
+
+# 构建/刷新滚动索引（默认开启增量扫描；强制全量加 --rebuild；构建后删明文库加 --clean-plain）
 python 'scripts\ntqq_build.py' --days 30
 ```
 
@@ -64,6 +68,7 @@ python 'scripts\ntqq_report.py' --active --hours 6 --brief --max-msgs 40 --out '
 python 'scripts\ntqq_report.py' --class-mode --days 7 --out '...'
 python 'scripts\ntqq_report.py' --group <群号> --days 2 --out '...'
 python 'scripts\ntqq_report.py' --search <关键词> --days 7 --out '...'
+python 'scripts\ntqq_report.py' --search '关键词A 关键词B' --days 7 --out '...'
 python 'scripts\ntqq_report.py' --list-groups
 ```
 
@@ -128,6 +133,41 @@ python 'scripts\ntqq_report.py' --group <群> --days 7 --anonymize --out '...'
 | 群名（文字）不替换 | 群名本身敏感的话，外传前自己再改一遍 |
 
 产出命名：单群 `output\<群名>_<日期>.md`；多群 `output\全部群_<日期_时分>.md`。
+
+### 2.3 一键初始化、增量索引与持续监听
+
+- **一键初始化（`ntqq_init.py`）**：自动扫描 `%USERPROFILE%\Documents\Tencent Files` 下包含 `nt_qq\nt_db\nt_msg.db` 的账号目录与本机 `QQ.exe` 路径，生成 `config.json` 并创建所需目录结构：
+  ```powershell
+  python 'scripts\ntqq_init.py'
+  python 'scripts\ntqq_init.py' --qq <QQ号> --root 'D:/QQChatCache' --include-c2c --non-interactive
+  ```
+- **增量索引（默认开启）与强制全量**：`ntqq_build.py` 默认根据上次 `cutoff_ts` 增量扫描新消息（自动回退 1 天覆盖跨午夜或延迟落盘消息），大幅缩短日常刷新耗时；如需强制全量重建加 `--rebuild`：
+  ```powershell
+  python 'scripts\ntqq_build.py' --days 30              # 默认增量刷新
+  python 'scripts\ntqq_build.py' --days 30 --rebuild    # 强制清空并全量重建
+  ```
+- **持续监听模式（`--watch`）**：后台轮询 `nt_msg.db` 与 `nt_msg.db-wal` 的文件指纹，发现落盘变动即自动增量刷新索引：
+  ```powershell
+  python 'scripts\ntqq_build.py' --watch --interval 300
+  ```
+
+### 2.4 私聊（C2C）物理隔离、FTS5 检索、安全清理与分级日志
+
+- **私聊（C2C）支持（独立表物理隔离）**：私聊数据存储在 `index.db` 的独立表 `c2c_messages` 与 `c2c_groups` 中，**默认不开启且与群聊表 `messages` / `groups` 完全物理隔离**，普通群聊报告绝不会混入私聊记录：
+  ```powershell
+  python 'scripts\ntqq_build.py' --days 30 --include-c2c
+  python 'scripts\ntqq_report.py' --c2c --hours 24 --brief --out '<root>\output\_c2c.md'
+  python 'scripts\ntqq_report.py' --contact <QQ号或昵称> --days 7 --out '<root>\output\_contact.md'
+  python 'scripts\ntqq_report.py' --c2c --list-groups
+  ```
+- **FTS5 全文检索与多关键词检索**：`index.db` 内建 `messages_fts`（SQLite FTS5 虚拟表），`--search` 支持空格分隔的多关键词组合检索（如 `--search '关键词A 关键词B'`）；当查询 `c2c_messages` 或环境不支持 FTS5 时自动平滑回退 `LIKE` 子串匹配。
+- **Windows DPAPI 密钥本地加密与 `--clean-plain` 明文库清理**：
+  - Windows 下 `keys\key_map.json` 与 `data\rkey.json` 中的密钥自动经系统 **DPAPI**（绑定当前登录用户凭据）加密为 `dpapi:<base64>` 格式落盘，且向后兼容旧版明文 hex。
+  - 构建完成后可通过 `--clean-plain`（或在 `config.json` 中设 `"clean_plain_after_build": true`）自动删除 `data\plain\` 下的明文数据库副本，仅保留轻量 `index.db`：
+    ```powershell
+    python 'scripts\ntqq_build.py' --days 30 --clean-plain
+    ```
+- **分级日志（`logs\qq-digest.log` 与 `--verbose`）**：控制台默认仅打印 `INFO+` 摘要，完整 `DEBUG+` 诊断信息按日滚动写入 `<root>\logs\qq-digest.log`（保留 7 天）；排查异常时可传 `--verbose` 在终端实时查看调试日志。
 
 ## 3. QQ 要不要开着？
 

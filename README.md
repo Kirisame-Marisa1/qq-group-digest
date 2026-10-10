@@ -28,7 +28,8 @@
 | ❌ 不注入 | 不注入 DLL、不 Hook QQ、不修改 QQ 内存 |
 | ❌ 不上传 | 聊天内容不出本机；只有取图片时会访问腾讯自己的 CDN |
 | ✅ 只读 | 读本机已存在的数据库文件 + 读一次 QQ 进程内存拿解密密钥 |
-| ✅ 可删 | 解密出的 4.3 GB 明文库放在缓存目录，随时整目录删除 |
+| ✅ 可删 | 解密出的 4.3 GB 明文库放在缓存目录，随时整目录删除（或加 `--clean-plain` 构建后自动清理） |
+| 🔒 本地凭据加密 | Windows 下落盘的密钥缓存（`key_map.json` / `rkey.json`）默认经 **Windows DPAPI** 绑定当前系统登录用户加密存储 |
 
 > 从腾讯侧看，本工具只做了两件事：读本地文件、按图片 md5 请求一次公共 CDN。
 > 拿到的图片 URL 是腾讯自家的公开图片地址（见下方「图片」一节）。
@@ -63,15 +64,21 @@
 
 ```bash
 pip install cryptography
+# 或者直接按 pyproject.toml 安装命令行入口：
+pip install -e .
 ```
 
-把仓库放到任意位置，然后：
+把仓库放到任意位置，推荐使用**一键初始化向导**自动发现本机 QQ 号与安装路径：
 
 ```bash
-# 1) 复制配置模板并填入你的 QQ 号
+# 方式 A：一键初始化（自动扫描 Documents\Tencent Files 下的 QQ 号并生成 config.json + 目录）
+python scripts/ntqq_init.py
+
+# 方式 B：手动复制配置模板并填入你的 QQ 号
+#1) 复制配置模板并填入你的 QQ 号
 copy config.example.json config.json
 
-# 2) 取密钥（需要 QQ 正在运行并已登录）
+# 2) 取密钥（需要 QQ 正在运行并已登录；ntqq_build.py 也会自动调用）
 python scripts/ntqq_key.py --qq <你的QQ号> -o ../keys/key_map.json
 
 # 3) 解密 + 建索引
@@ -97,7 +104,8 @@ Windows 上建议用绝对路径调用解释器，并设 `PYTHONIOENCODING=utf-8
 ├─ media/          下载到的图片
 ├─ knowledge/glossary/  关键词库
 ├─ output/         总结产出
-└─ run/            临时文件
+├─ run/            临时文件
+└─ logs/           按日滚动日志 qq-digest.log（保留 7 天）
 ```
 
 ---
@@ -105,14 +113,30 @@ Windows 上建议用绝对路径调用解释器，并设 `PYTHONIOENCODING=utf-8
 ## 常用命令
 
 ```bash
-# 建/刷新滚动索引（自动判断密钥缓存是否有效、源库是否变化）
-python scripts/ntqq_build.py --days 30
+# 一键初始化配置与目录（自动扫描本机 QQ 账号与 QQ.exe 路径）
+python scripts/ntqq_init.py
+python scripts/ntqq_init.py --qq <你的QQ号> --root D:/QQChatCache --include-c2c
 
-# 多群速览 / 单群详述 / 关键词检索 / 群列表
+# 建/刷新滚动索引（默认开启增量索引，自动判断密钥缓存是否有效、源库是否变化）
+python scripts/ntqq_build.py --days 30
+python scripts/ntqq_build.py --days 30 --rebuild          # 强制全量重建索引
+python scripts/ntqq_build.py --days 30 --clean-plain      # 构建完成后自动删除 data/plain/ 明文库副本
+
+# 持续监听模式：后台定期检测 nt_msg.db(-wal) 变动并自动增量刷新索引
+python scripts/ntqq_build.py --watch --interval 300
+
+# 多群速览 / 单群详述 / 关键词检索（支持 FTS5 多词检索） / 群列表
 python scripts/ntqq_report.py --active --hours 6 --brief
 python scripts/ntqq_report.py --group <群号或群名片段> --days 7
 python scripts/ntqq_report.py --search <关键词> --days 30
+python scripts/ntqq_report.py --search "关键词A 关键词B" --days 30
 python scripts/ntqq_report.py --list-groups
+
+# 私聊（C2C）索引与报告（存储在独立表 c2c_messages / c2c_groups，默认与群聊完全物理隔离）
+python scripts/ntqq_build.py --days 30 --include-c2c
+python scripts/ntqq_report.py --c2c --hours 24 --brief
+python scripts/ntqq_report.py --contact <QQ号或昵称> --days 7
+python scripts/ntqq_report.py --c2c --list-groups
 
 # 班群模式：重点速览在前 + 逐群不限篇幅
 python scripts/ntqq_report.py --class-mode --days 7
@@ -125,6 +149,10 @@ python scripts/ntqq_report.py --ask "某群今天聊某话题了吗"
 
 # 外传前脱敏：昵称->代号、群号->群N、QQ号抹掉
 python scripts/ntqq_report.py --group <群> --days 7 --anonymize
+
+# 调试日志：控制台输出 DEBUG 详情（日志文件默认写入 <root>/logs/qq-digest.log）
+python scripts/ntqq_build.py --days 30 --verbose
+python scripts/ntqq_report.py --active --hours 6 --verbose
 
 # 关键词库：扫描 / 查用法 / 入库 / 看清单
 python scripts/ntqq_glossary.py --scan --days 60 --top 60
@@ -149,13 +177,18 @@ python scripts/ntqq_crawler.py                      # 执行自适应流控拉�
 ## 功能
 
 ### 数据层
+- **一键初始化向导（`ntqq_init.py`）**：自动扫描 `%USERPROFILE%\Documents\Tencent Files` 下的 QQ 账号目录与本机 `QQ.exe` 路径，生成并校验 `config.json`
 - 从 QQ 进程内存提取 SQLCipher 密钥（不注入、不 Hook，普通用户权限即可；实测扫描 808 MB 用 0.8 秒）
+- **Windows DPAPI 密钥保护与明文清理**：落盘的 `key_map.json` 与 `rkey.json` 自动使用当前 Windows 登录凭据（DPAPI）加密；支持 `--clean-plain`（或 `config.json` 中 `"clean_plain_after_build": true`）在建完索引后自动删除 `data/plain/` 下的明文数据库副本
 - 流式逐页解密，**不把 4 GB 读进内存**（识别出的一些同类工具会整文件读入，容易 OOM）
 - **保留 page1 原始头**（reserved=80），这是能否正确读出内容的关键
 - **行级容错**：活跃写入的库会有损坏页；自动重拉快照重试 3 轮，仍失败则按天补取并记录缺口
 - 版本漂移检测：比对 `sqlite_master` 结构指纹，不一致就拒绝产出并生成重解析报告
+- **分级日志（`logs/qq-digest.log`）**：控制台默认输出精简 `INFO` 信息，完整 `DEBUG` 诊断日志按日滚动写入 `logs/qq-digest.log`（保留 7 天），支持 `--verbose` 实时输出到终端
 
 ### 抽取层
+- **增量索引与持续监听**：`ntqq_build.py` 默认根据上次 `cutoff_ts` 增量扫描新增消息（自动回退 1 天覆盖跨午夜/延迟落盘），`--rebuild` 强制全量重建；支持 `--watch --interval 300` 持续监听源库 WAL 变动
+- **私聊（C2C）物理隔离支持**：通过 `--include-c2c`（或配置 `"include_c2c": true`）抽取 `c2c_msg_table`，存入独立的 `c2c_messages` 与 `c2c_groups` 表，与群聊数据完全物理隔离，互不干扰
 - 群消息主表秒级时间戳、发送者 QQ/UID、群名片/昵称（群名片 → 全局昵称 → QQ 号 回退）
 - 消息正文是 Protobuf（`40800` 列），自带一个**无依赖的 wire 解码器**
 - **转发消息展开**：转发正文在 `40900` 列（repeated，每条子记录就是一条被转发的原始消息），
@@ -172,6 +205,8 @@ python scripts/ntqq_crawler.py                      # 执行自适应流控拉�
 - 关键词提取（n-gram，无需分词库）、发言榜、被 @ 榜
 - 与上一个等长窗口的趋势对比
 - **重点速览**：自动挑出通知/公告/@全体/长文/转发
+- **FTS5 全文检索与多关键词检索**：`index.db` 自动维护 `messages_fts`（FTS5 虚拟表），`--search` 支持空格分隔的多关键词组合检索，并在环境不支持 FTS5 时平滑回退 `LIKE`
+- **私聊报告模式**：`ntqq_report.py --c2c` 或 `--contact <QQ号或昵称>` 独立查询私聊会话与提问（`--ask`）
 - 群名或群号模糊匹配、跨群关键词检索
 
 ### 图片层（不用点开也能拿到）

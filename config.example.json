@@ -11,11 +11,13 @@
   "class_groups": [],
   "class_group_names": {},
   "glossary_autoupdate": true,
+  "include_c2c": false,
+  "clean_plain_after_build": false,
   "crawler": {
     "bridge_port": 48920,
     "batch_size": 30,
     "request_delay_ms": 1000,
     "max_retry": 3
   },
-  "_note": "root=数据根目录；account=QQ号；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；crawler=缺口漫游爬虫与桥接配置"
+  "_note": "root=数据根目录；account=QQ号；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；include_c2c=是否同时索引私聊消息（默认false，独立表物理隔离）；clean_plain_after_build=构建索引后是否自动清理data/plain明文库副本（默认false）；crawler=缺口漫游爬虫与桥接配置"
 }
