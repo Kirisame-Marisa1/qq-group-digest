@@ -10,8 +10,8 @@
 import argparse, json, math, os, re, sqlite3, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import (open_index, now_ts, fmt, parse_when, log, APP, OUTPUT, ensure_dirs,
-                       KNOW, GLOSSARY, TZ, MEDIA)
+from ntqq_core import (open_index, now_ts, fmt, parse_when, log, log_debug, log_warn, set_log_level,
+                       APP, OUTPUT, ensure_dirs, KNOW, GLOSSARY, TZ, MEDIA)
 from datetime import datetime, timedelta
 import sqlite3 as _sq3
 
@@ -243,14 +243,14 @@ def load_aliases():
 GENERIC = set('群 的 了 是 有 在 和 与 或 东方 同好 交流 会 社 们 大家')
 
 
-def resolve_group(idx, q, topn=4):
+def resolve_group(idx, q, topn=4, grp_table='groups'):
     """从问句猜群：先做别名展开，再按最长公共子串打分。"""
     aliases = load_aliases()
     qq = q
     for k, v in aliases.items():
         if k in qq:
             qq = qq.replace(k, v)
-    rows = idx.execute('SELECT group_code, group_name FROM groups WHERE group_name IS NOT NULL').fetchall()
+    rows = idx.execute('SELECT group_code, group_name FROM %s WHERE group_name IS NOT NULL' % grp_table).fetchall()
     scored = []
     for code, name in rows:
         if not name:
@@ -272,12 +272,13 @@ def resolve_group(idx, q, topn=4):
 def extract_keywords(q):
     known = []
     try:
-        store = json.load(open(os.path.join(GLOSSARY, 'terms.json'), encoding='utf-8'))
+        with open(os.path.join(GLOSSARY, 'terms.json'), encoding='utf-8') as fh:
+            store = json.load(fh)
         for t in store.get('terms', {}):
             if t.lower() in q.lower():
                 known.append(t)
-    except Exception:
-        pass
+    except Exception as e:
+        log_debug('读取词库 terms.json 失败: %r' % e)
     clean = q
     for k, v in load_aliases().items():
         clean = clean.replace(k, v)
@@ -296,14 +297,52 @@ def extract_keywords(q):
     return known, sorted(grams, key=lambda x: -len(x))
 
 
-def ask(idx, q, t0, t1, group_codes=None, limit=40):
+def search_messages(idx, query, t0, t1, msg_table='messages'):
+    """检索消息：对群消息优先尝试 FTS5 全文检索（支持布尔/多词查询），再与多关键词 LIKE 合并去重。"""
+    q = (query or '').strip()
+    if not q:
+        return []
+    seen_ids = set()
+    out = []
+
+    # 1. 若检索群消息，先尝试 FTS5 全文匹配（对英文词、数字、布尔表达式极快）
+    if msg_table == 'messages':
+        try:
+            fts_sql = ('SELECT m.* FROM messages_fts f JOIN messages m ON f.rowid = m.msg_id '
+                       'WHERE messages_fts MATCH ? AND m.ts>=? AND m.ts<=? ORDER BY m.ts')
+            for r in idx.execute(fts_sql, (q, t0, t1)).fetchall():
+                mid = r['msg_id']
+                if mid not in seen_ids:
+                    seen_ids.add(mid)
+                    out.append(r)
+        except sqlite3.OperationalError as e:
+            log_debug('FTS5 查询未命中或语法回退 LIKE: %s' % e)
+
+    # 2. 中文子串/多词 AND LIKE 匹配（无需分词库即可命中任意连续汉字片段）
+    terms = [t for t in q.split() if t.upper() not in ('AND', 'OR', 'NOT')]
+    if not terms:
+        terms = [q]
+    like_clauses = ' AND '.join('text LIKE ?' for _ in terms)
+    params = [t0, t1] + ['%' + t.strip('"') + '%' for t in terms]
+    like_sql = 'SELECT * FROM %s WHERE ts>=? AND ts<=? AND %s ORDER BY ts' % (msg_table, like_clauses)
+    for r in idx.execute(like_sql, params).fetchall():
+        mid = r['msg_id']
+        if mid not in seen_ids:
+            seen_ids.add(mid)
+            out.append(r)
+
+    out.sort(key=lambda r: r['ts'])
+    return out
+
+
+def ask(idx, q, t0, t1, group_codes=None, limit=40, msg_table='messages', grp_table='groups'):
     known, grams = extract_keywords(q)
     kws = list(dict.fromkeys(known + grams))
     # 群名本身不算检索词（转发块里每条都带群名，会把结果全污染）
     excl = []
     if group_codes:
         for c in group_codes:
-            r = idx.execute('SELECT group_name FROM groups WHERE group_code=?', (c,)).fetchone()
+            r = idx.execute('SELECT group_name FROM %s WHERE group_code=?' % grp_table, (c,)).fetchone()
             if r and r[0]:
                 excl.append(r[0])
     if excl:
@@ -313,7 +352,7 @@ def ask(idx, q, t0, t1, group_codes=None, limit=40):
     if group_codes:
         where += ' AND group_code IN (%s)' % ','.join('?' * len(group_codes))
         params += list(group_codes)
-    rows = idx.execute('SELECT * FROM messages WHERE ' + where + ' ORDER BY group_code, ts', params).fetchall()
+    rows = idx.execute('SELECT * FROM %s WHERE %s ORDER BY group_code, ts' % (msg_table, where), params).fetchall()
     n = max(1, len(rows))
     def clean_meta(t):
         t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', t or '')
@@ -352,11 +391,11 @@ def anon_code(n):
     return s
 
 
-def build_anon(idx, codes=None):
+def build_anon(idx, codes=None, msg_table='messages'):
     """昵称 -> 稳定代号（按发言量排序，存本地，跨次一致）。"""
     os.makedirs(ANON_DIR, exist_ok=True)
     out = {}
-    q = 'SELECT DISTINCT group_code FROM messages'
+    q = 'SELECT DISTINCT group_code FROM %s' % msg_table
     for (code,) in idx.execute(q):
         if codes and code not in codes:
             continue
@@ -364,19 +403,24 @@ def build_anon(idx, codes=None):
         m = {}
         if os.path.exists(p):
             try:
-                m = json.load(open(p, encoding='utf-8'))
-            except Exception:
+                with open(p, encoding='utf-8') as fh:
+                    m = json.load(fh)
+            except Exception as e:
+                log_debug('读脱敏映射 %s 失败: %r' % (p, e))
                 m = {}
         used = set(m.values())
         n = 1
-        for name, c in idx.execute("SELECT sender_name, COUNT(*) c FROM messages WHERE group_code=? AND sender_name NOT IN ('系统','未知','') GROUP BY sender_name ORDER BY c DESC", (code,)):
+        sql = ("SELECT sender_name, COUNT(*) c FROM %s WHERE group_code=? "
+               "AND sender_name NOT IN ('系统','未知','') GROUP BY sender_name ORDER BY c DESC" % msg_table)
+        for name, c in idx.execute(sql, (code,)):
             if name and name not in m:
                 while ('用户' + anon_code(n)) in used:
                     n += 1
                 m[name] = '用户' + anon_code(n)
                 used.add(m[name])
         if m:
-            json.dump(m, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(m, fh, ensure_ascii=False, indent=1)
         out[code] = m
     return out
 
@@ -431,6 +475,8 @@ def main():
     ap.add_argument('--anonymize', action='store_true', help='昵称->代号，并抹掉 QQ 号（外传用）')
     ap.add_argument('--active', action='store_true')
     ap.add_argument('--group', action='append', default=[])
+    ap.add_argument('--c2c', action='store_true', help='查询私聊记录（与群聊完全隔离，需先 ntqq_build.py --include-c2c）')
+    ap.add_argument('--contact', action='append', default=[], help='指定私聊联系人 QQ 号或昵称片段（自动开启 --c2c）')
     ap.add_argument('--search', default=None)
     ap.add_argument('--list-groups', action='store_true')
     ap.add_argument('--since'); ap.add_argument('--until')
@@ -447,7 +493,17 @@ def main():
     ap.add_argument('--media-list', default=None, help='把窗口内图片候选写成 TSV')
     ap.add_argument('--no-group-state', action='store_true',
                     help='不在报告里输出「群变更」（新入群/退群/改名）段落')
+    ap.add_argument('--verbose', action='store_true', help='显示调试日志')
     a = ap.parse_args()
+
+    if a.verbose:
+        set_log_level(True)
+    if a.contact:
+        a.c2c = True
+        a.group.extend(a.contact)
+
+    msg_table = 'c2c_messages' if a.c2c else 'messages'
+    grp_table = 'c2c_groups' if a.c2c else 'groups'
 
     idx = open_index(); idx.row_factory = sqlite3.Row
     def meta(k, d='0'):
@@ -459,7 +515,7 @@ def main():
     bad_days = json.loads(meta('bad_days', '[]') or '[]')
 
     if a.list_groups:
-        for g in idx.execute('SELECT * FROM groups ORDER BY n DESC'):
+        for g in idx.execute('SELECT * FROM %s ORDER BY n DESC' % grp_table):
             print('%s  %-30s %6d 条  %s ~ %s' % (g['group_code'], (g['group_name'] or '-')[:30], g['n'],
                   fmt(g['first_ts'], '%m-%d %H:%M'), fmt(g['last_ts'], '%m-%d %H:%M')))
         return
@@ -480,7 +536,7 @@ def main():
     # ── 群变更提示（新入群 / 退群 / 回归 / 改名）─────────────────────────────
     #  不排除任何群、不做分类——只把「跟你上次看的时候比变了什么」打在最前面。
     state_lines = []
-    if not a.no_group_state:
+    if not a.no_group_state and not a.c2c:
         try:
             import ntqq_group_state as GS
             sres = GS.scan()
@@ -508,24 +564,24 @@ def main():
         except Exception as e:
             state_lines.append('> ⚠ 群变更读取失败：%r' % e)
 
-    if not a.no_group_state:
+    if not a.no_group_state and not a.c2c:
         for ln in state_lines:
             out.append(ln)
         if state_lines:
             out.append('')
 
-    out.append('# QQ 群聊报告')
+    out.append('# QQ 私聊报告' if a.c2c else '# QQ 群聊报告')
     out.append('')
     out.append('> **数据截止 %s**（索引构建于 %s，距现在 %d 分钟；本次扫描 %s 行，读取错误 %s 次）'
                % (fmt(cutoff, '%Y-%m-%d %H:%M:%S'), fmt(built, '%Y-%m-%d %H:%M:%S'),
                   int((now - cutoff) / 60) if cutoff else -1, scan_rows, errs))
-    if bad_days:
+    if bad_days and not a.c2c:
         out.append('> ⚠ 数据缺口：有 %d 个「群-日」读取失败被跳过：%s'
                    % (len(bad_days), ', '.join('%s@%s' % (g, d) for g, d in bad_days[:12])))
     out.append('')
     out.append('- 查询窗口: %s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M')))
-    cur_n = idx.execute('SELECT COUNT(*) FROM messages WHERE ts>=? AND ts<=?', (t0, t1)).fetchone()[0]
-    prev_n = idx.execute('SELECT COUNT(*) FROM messages WHERE ts>=? AND ts<?', (t0 - span, t0)).fetchone()[0]
+    cur_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<=?' % msg_table, (t0, t1)).fetchone()[0]
+    prev_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<?' % msg_table, (t0 - span, t0)).fetchone()[0]
     out.append('- 窗口内总消息 %d 条；上一个等长窗口 %d 条；趋势 %s（%+d）'
                % (cur_n, prev_n, '↑' if cur_n > prev_n else ('↓' if cur_n < prev_n else '→'), cur_n - prev_n))
     out.append('')
@@ -537,12 +593,12 @@ def main():
             a_t0 = now - int(a.hours * 3600); label = '近 %g 小时' % a.hours
         if a.days:
             a_t0 = now - int(a.days * 86400); label = '近 %g 天' % a.days
-        cand = resolve_group(idx, a.ask)
-        gcodes = None; gdesc = '全部群'
+        cand = resolve_group(idx, a.ask, grp_table=grp_table)
+        gcodes = None; gdesc = '全部私聊' if a.c2c else '全部群'
         if a.group:
             picked = []
             for s in a.group:
-                for r in idx.execute('SELECT group_code, group_name FROM groups'):
+                for r in idx.execute('SELECT group_code, group_name FROM %s' % grp_table):
                     if str(r[0]) == s or (r[1] and s in r[1]):
                         picked.append(r[0])
             if picked:
@@ -550,9 +606,10 @@ def main():
                 gdesc = '、'.join(str(c) for c in gcodes)
         elif cand and cand[0][0] >= 5 and (len(cand) == 1 or cand[0][0] >= cand[1][0] + 2):
             gcodes = [cand[0][1]]; gdesc = cand[0][2]
-        kws, known, scored, dropped, nwin, arows = ask(idx, a.ask, a_t0, t1, gcodes)
-        meta = {k: v for k, v in idx.execute('SELECT key, value FROM meta')}
-        built = int(meta.get('built_at') or 0)
+        kws, known, scored, dropped, nwin, arows = ask(
+            idx, a.ask, a_t0, t1, gcodes, msg_table=msg_table, grp_table=grp_table)
+        meta_map = {k: v for k, v in idx.execute('SELECT key, value FROM meta')}
+        built = int(meta_map.get('built_at') or 0)
         age = now - built if built else 0
         if any(k in a.ask for k in ('刚刚', '刚才', '现在', '今天')) and age > 600:
             out.append('> ⚠️ **索引是 %d 分钟前建的，不是实时的。**'
@@ -562,9 +619,9 @@ def main():
         out.append('## 提问: %s' % a.ask)
         out.append('')
         out.append('- 解析出的时间范围: **%s**（%s ~ %s）' % (label, fmt(a_t0, '%m-%d %H:%M'), fmt(t1, '%m-%d %H:%M')))
-        out.append('- 解析出的群: **%s**' % gdesc)
+        out.append('- 解析出的对象: **%s**' % gdesc if a.c2c else '- 解析出的群: **%s**' % gdesc)
         if cand:
-            out.append('- 群名候选（分数）: %s' % '、'.join('%s(%d)' % (n, s) for s, c, n in cand))
+            out.append('- 候选（分数）: %s' % '、'.join('%s(%d)' % (n, s) for s, c, n in cand))
         out.append('- 窗口内消息 %d 条，检索词 %d 个: %s' % (nwin, len(kws), ('、'.join(kws) if kws else '（无）')))
         if dropped:
             out.append('- 被当背景噪音剔除的高频词: %s' % '、'.join(dropped[:12]))
@@ -580,7 +637,7 @@ def main():
             out.append('**结论：没有。**在解析出的时间范围和群里，**一条相关消息都没找到。**')
         out.append('')
         if gcodes and not strong:
-            _, _, other, _, _, _ = ask(idx, a.ask, a_t0, t1, None)
+            _, _, other, _, _, _ = ask(idx, a.ask, a_t0, t1, None, msg_table=msg_table, grp_table=grp_table)
             other = [x for x in other if x[3]['group_code'] not in gcodes and x[0] >= 0.30 and x[1] >= 2][:10]
             if other:
                 out.append('> ⚠️ 但**其他群**里有 %d 条内容相近，可能是你记错群了：' % len(other))
@@ -623,7 +680,8 @@ def main():
         result['ask_hits'] = len(scored)
         text = chr(10).join(out)
         if a.out:
-            open(a.out, 'w', encoding='utf-8').write(text)
+            with open(a.out, 'w', encoding='utf-8') as fh:
+                fh.write(text)
             log('[out] %s' % a.out)
         else:
             print(text)
@@ -655,8 +713,7 @@ def main():
         return
 
     if a.search:
-        rows = idx.execute('SELECT * FROM messages WHERE ts>=? AND ts<=? AND text LIKE ? ORDER BY ts',
-                           (t0, t1, '%' + a.search + '%')).fetchall()
+        rows = search_messages(idx, a.search, t0, t1, msg_table=msg_table)
         conv = [r for r in rows if r['kind'] not in SYS_KINDS]
         out.append('## 关键词命中: %r —— %d 条（有效对话 %d 条）' % (a.search, len(rows), len(conv)))
         out.append('')
@@ -669,14 +726,14 @@ def main():
                                            r['sender_name'], (r['text'] or '')[:200]))
         result['n'] = len(rows)
     else:
-        if a.class_mode:
+        if a.class_mode and not a.c2c:
             cfg = json.load(open(os.path.join(APP, 'config.json'), encoding='utf-8'))
             cg = [int(x) for x in cfg.get('class_groups', [])]
             if not a.group and cg:
                 a.group = [str(x) for x in cg]
         if a.group:
             # 显式点名的群尊重用户意图，不过滤
-            allg = idx.execute('SELECT group_code, group_name FROM groups ORDER BY group_code').fetchall()
+            allg = idx.execute('SELECT group_code, group_name FROM %s ORDER BY group_code' % grp_table).fetchall()
             targets = []
             for s in a.group:
                 s = s.strip()
@@ -685,40 +742,40 @@ def main():
                         if (r['group_code'], r['group_name']) not in targets:
                             targets.append((r['group_code'], r['group_name']))
             if not targets:
-                log('未找到匹配的群，用 --list-groups 查看。'); return
+                log('未找到匹配的对象，用 --list-groups 查看。'); return
         else:
             targets = [(r['group_code'], r['group_name']) for r in idx.execute(
-                'SELECT group_code, group_name FROM groups WHERE last_ts>=? ORDER BY n DESC', (t0,))]
+                'SELECT group_code, group_name FROM %s WHERE last_ts>=? ORDER BY n DESC' % grp_table, (t0,))]
 
-        ANON = build_anon(idx, set(c for c, _ in targets)) if a.anonymize else {}
+        ANON = build_anon(idx, set(c for c, _ in targets), msg_table=msg_table) if a.anonymize else {}
         if a.anonymize:
             for i, (c, _n) in enumerate(targets, 1):
-                ANON_LABELS[c] = '群%d' % i
+                ANON_LABELS[c] = ('私聊%d' if a.c2c else '群%d') % i
 
         prepared = []
         for code, name in targets:
-            rows = idx.execute('SELECT * FROM messages WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts',
+            rows = idx.execute('SELECT * FROM %s WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts' % msg_table,
                                (code, t0, t1)).fetchall()
             if not rows:
                 continue
             nconv = sum(1 for r in rows if r['kind'] not in SYS_KINDS)
             if nconv < a.min_conv:
                 continue
-            prev = idx.execute('SELECT COUNT(*) FROM messages WHERE group_code=? AND ts>=? AND ts<?',
+            prev = idx.execute('SELECT COUNT(*) FROM %s WHERE group_code=? AND ts>=? AND ts<?' % msg_table,
                                (code, t0 - span, t0)).fetchone()[0]
             prepared.append((nconv, len(rows), code, name, rows, prev))
         prepared.sort(key=lambda x: -x[0])
-        out.append('- 有实际对话的群 **%d 个**' % len(prepared))
+        out.append('- 有实际对话的%s **%d 个**' % ('联系人' if a.c2c else '群', len(prepared)))
         out.append('')
         if prepared:
-            out.append('| 群 | 有效对话 | 总消息 | 参与 | 最后一条 |')
+            out.append('| %s | 有效对话 | 总消息 | 参与 | 最后一条 |' % ('联系人' if a.c2c else '群'))
             out.append('|---|---|---|---|---|')
             for nconv, ntot, code, name, rows, _ in prepared:
                 np = len(set(r['sender_name'] for r in rows if r['sender_name'] not in ('系统', '未知')))
                 out.append('| %s (%s) | %d | %d | %d | %s |' % (name or '-', code_label(code), nconv, ntot, np,
                                                            fmt(max(r['ts'] for r in rows), '%m-%d %H:%M')))
             out.append('')
-        if not a.no_focus:
+        if not a.no_focus and not a.c2c:
             allrows = []
             for _, _, _, _, rows, _ in prepared:
                 allrows.extend(rows)
@@ -751,3 +808,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

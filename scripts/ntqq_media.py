@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, load_config, now_ts, fmt, local,
-                       gchat_image_url, sniff_ext, MEDIA, log,
+                       gchat_image_url, sniff_ext, MEDIA, log, log_debug, set_log_level,
                        load_rkey, save_rkey, db_image_url)
 
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -160,7 +160,10 @@ def main():
     ap.add_argument('--prefer-local', action='store_true', default=False,
                     help='先查本机已落盘文件（快，但往往只是缩略图）；默认先走多媒体 CDN 取原图')
     ap.add_argument('--manifest', default=None)
+    ap.add_argument('--verbose', action='store_true', help='显示调试日志')
     a = ap.parse_args()
+    if a.verbose:
+        set_log_level(True)
 
     cfg = load_config()
     out_root = cfg.get('media_cache_dir') or MEDIA

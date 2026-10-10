@@ -12,57 +12,75 @@ IV_SIZE, RESERVE = 16, 48
 KEY = None
 
 
-def plain(body):
+def plain(body, key=None):
+    k = key if key is not None else KEY
     enc = body[:len(body) - RESERVE]
     iv = body[len(body) - RESERVE:len(body) - RESERVE + IV_SIZE]
-    d = Cipher(algorithms.AES(KEY), modes.CBC(iv)).decryptor()
+    d = Cipher(algorithms.AES(k), modes.CBC(iv)).decryptor()
     return d.update(enc) + d.finalize()
 
 
-def main():
+def decrypt_db(key_map_path, db_name, out_path, max_mb=0):
+    """流式解密指定 NTQQ SQLCipher 数据库到 out_path，支持 DPAPI 加密与明文 key_map。"""
     global KEY
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ntqq_core import unwrap_key_hex, log
+
+    with open(key_map_path, encoding='utf-8') as fh:
+        km = json.load(fh)
+    src = None
+    key_bytes = None
+    for sh, files in km['salt_files'].items():
+        for f in files:
+            if os.path.basename(f) == db_name:
+                src = f
+                key_bytes = bytes.fromhex(unwrap_key_hex(km['key_map'][sh]))
+    if src is None or key_bytes is None:
+        log('ERROR: %s not in key_map' % db_name)
+        raise SystemExit(1)
+    KEY = key_bytes
+
+    total = os.path.getsize(src)
+    pages = ((min(total, int(max_mb * 1048576)) if max_mb else total) - EXT_HEADER) // PAGE_SIZE
+    d = os.path.dirname(os.path.abspath(out_path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    log('src=%s size=%.2fGB pages=%d' % (src, total / 1073741824.0, pages))
+    t0 = time.time()
+    with open(src, 'rb') as fi, open(out_path, 'wb') as fo:
+        fi.seek(EXT_HEADER)
+        for i in range(pages):
+            raw = fi.read(PAGE_SIZE)
+            if len(raw) < PAGE_SIZE:
+                break
+            if i == 0:
+                pt = plain(raw[SALT_SIZE:], key_bytes)          # pt[0:16] 就是原始 SQLite 头
+                page = bytes(b'SQLite format 3\x00' + pt)
+            else:
+                page = plain(raw, key_bytes)
+            if len(page) < PAGE_SIZE:
+                page += b'\x00' * (PAGE_SIZE - len(page))
+            fo.write(page)
+    sz = os.path.getsize(out_path)
+    log('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
+    with open(out_path, 'rb') as f:
+        h = f.read(32)
+    if len(h) >= 32:
+        log('   header: page_size=%d reserved=%d db_size_pages=%d' % (
+            int.from_bytes(h[16:18], 'big'), h[20], int.from_bytes(h[28:32], 'big')))
+    return out_path
+
+
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--key-map', required=True)
     ap.add_argument('--db', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--max-mb', type=float, default=0)
     a = ap.parse_args()
-
-    km = json.load(open(a.key_map, encoding='utf-8'))
-    src = None
-    for sh, files in km['salt_files'].items():
-        for f in files:
-            if os.path.basename(f) == a.db:
-                src = f; KEY = bytes.fromhex(km['key_map'][sh])
-    if src is None:
-        print('ERROR: %s not in key_map' % a.db); sys.exit(1)
-
-    total = os.path.getsize(src)
-    pages = ((min(total, int(a.max_mb * 1048576)) if a.max_mb else total) - EXT_HEADER) // PAGE_SIZE
-    d = os.path.dirname(os.path.abspath(a.out))
-    if d: os.makedirs(d, exist_ok=True)
-    print('src=%s size=%.2fGB pages=%d' % (src, total / 1073741824.0, pages))
-    t0 = time.time()
-    with open(src, 'rb') as fi, open(a.out, 'wb') as fo:
-        fi.seek(EXT_HEADER)
-        for i in range(pages):
-            raw = fi.read(PAGE_SIZE)
-            if len(raw) < PAGE_SIZE: break
-            if i == 0:
-                pt = plain(raw[SALT_SIZE:])          # pt[0:16] 就是原始 SQLite 头
-                page = bytes(b'SQLite format 3\x00' + pt)
-            else:
-                page = plain(raw)
-            if len(page) < PAGE_SIZE:
-                page += b'\x00' * (PAGE_SIZE - len(page))
-            fo.write(page)
-    sz = os.path.getsize(a.out)
-    print('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
-    with open(a.out, 'rb') as f:
-        h = f.read(32)
-    print('   header: page_size=%d reserved=%d db_size_pages=%d' % (
-        int.from_bytes(h[16:18], 'big'), h[20], int.from_bytes(h[28:32], 'big')))
+    decrypt_db(key_map_path=a.key_map, db_name=a.db, out_path=a.out, max_mb=a.max_mb)
 
 
 if __name__ == '__main__':
     main()
+
