@@ -22,10 +22,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, load_config, now_ts, fmt, local,
-                       gchat_image_url, sniff_ext, MEDIA, log,
-                       load_rkey, save_rkey, db_image_url, qq_path)
                        gchat_image_url, sniff_ext, MEDIA, log, log_debug, set_log_level,
-                       load_rkey, save_rkey, db_image_url)
+                       load_rkey, save_rkey, db_image_url, qq_path)
 
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 

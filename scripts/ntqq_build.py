@@ -236,7 +236,6 @@ def build_once(a):
             ts = r[I['time']] or 0
             if ts < cut:
                 continue
-            d = local(ts) if ts else None
             max_ts = max(max_ts, ts)
             d = local(ts) if ts else None
             uid = r[I['sender_uid']] or ''

@@ -667,8 +667,6 @@ def qq_path(*parts):
 
 def src_db(cfg, name):
     return qq_path(str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
-    return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'),
-                        str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
 
 
 def verify_keymap(km_path, cfg=None):
