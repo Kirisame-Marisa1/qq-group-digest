@@ -233,28 +233,30 @@ def scan_by_salt(handle, salt_hexes):
     return results
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--qq', required=True)
-    ap.add_argument('--pid', type=int, default=0)
-    ap.add_argument('-o', '--output', required=True)
-    a = ap.parse_args()
+def extract_keys(qq, pid=0, output=None, use_dpapi=True):
+    """从运行中的 QQ 进程只读扫描提取 SQLCipher 密钥，校验 HMAC 后保存（默认 DPAPI 加密）。"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ntqq_core import protect_key_hex, log
 
-    pid = a.pid or find_qq_main_pid()
+    pid = pid or find_qq_main_pid()
     if not pid:
-        print('ERROR: no QQ.exe running'); sys.exit(1)
+        log('ERROR: no QQ.exe running')
+        raise SystemExit(1)
 
-    d = db_dir(a.qq)
+    d = db_dir(str(qq))
     if not os.path.isdir(d):
-        print('ERROR: db dir not found: %s' % d); sys.exit(1)
+        log('ERROR: db dir not found: %s' % d)
+        raise SystemExit(1)
     pa_map = collect_db_info(d)
-    print('per-account: %d files, %d unique salts' % (sum(len(v) for v in pa_map.values()), len(pa_map)))
+    log('per-account: %d files, %d unique salts' % (sum(len(v) for v in pa_map.values()), len(pa_map)))
     if not pa_map:
-        print('ERROR: no NTQQ db found'); sys.exit(1)
+        log('ERROR: no NTQQ db found')
+        raise SystemExit(1)
 
     handle = windll.kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
-        print('ERROR: OpenProcess failed, GetLastError=%d' % ctypes.GetLastError()); sys.exit(1)
+        log('ERROR: OpenProcess failed, GetLastError=%d' % ctypes.GetLastError())
+        raise SystemExit(1)
     try:
         hits = scan_by_salt(handle, list(pa_map.keys()))
     finally:
@@ -264,26 +266,41 @@ def main():
     for sh, kh in hits.items():
         page1 = pa_map[sh][0][1]
         if verify_key_hmac(page1, bytes.fromhex(kh)):
-            key_map[sh] = kh
+            key_map[sh] = protect_key_hex(kh, use_dpapi=use_dpapi)
             names[sh] = [os.path.basename(x[0]) for x in pa_map[sh]]
         else:
-            print('  HMAC mismatch for salt %s' % sh)
+            log('  HMAC mismatch for salt %s' % sh)
 
     unresolved = [sh for sh in pa_map if sh not in key_map]
-    print('recovered %d/%d salts' % (len(key_map), len(pa_map)))
+    log('recovered %d/%d salts' % (len(key_map), len(pa_map)))
     for sh in unresolved:
-        print('  UNRESOLVED %s (%s)' % (sh, ', '.join(os.path.basename(x[0]) for x in pa_map[sh])))
+        log('  UNRESOLVED %s (%s)' % (sh, ', '.join(os.path.basename(x[0]) for x in pa_map[sh])))
 
-    out = {'qq': a.qq, 'pid': pid, 'generated': time.strftime('%Y-%m-%d %H:%M:%S'),
+    out = {'qq': str(qq), 'pid': pid, 'generated': time.strftime('%Y-%m-%d %H:%M:%S'),
+           'dpapi_protected': bool(use_dpapi and os.name == 'nt'),
            'key_map': key_map, 'salt_files': {sh: [x[0] for x in pa_map[sh]] for sh in key_map}}
-    with open(a.output, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
-    print('written: %s' % a.output)
+    if output:
+        os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+        with open(output, 'w', encoding='utf-8') as f:
+            json.dump(out, f, indent=2, ensure_ascii=False)
+        log('written: %s (dpapi=%s)' % (output, out['dpapi_protected']))
 
-    print('\n--- salt -> files ---')
+    log('\n--- salt -> files ---')
     for sh in key_map:
-        print('  %s: %s' % (sh[:16] + '..', ', '.join(names[sh])))
+        log('  %s: %s' % (sh[:16] + '..', ', '.join(names[sh])))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--qq', required=True)
+    ap.add_argument('--pid', type=int, default=0)
+    ap.add_argument('-o', '--output', required=True)
+    ap.add_argument('--plain-key', action='store_true', help='不使用 Windows DPAPI 加密，直接保存明文 hex 密钥')
+    a = ap.parse_args()
+    extract_keys(qq=a.qq, pid=a.pid, output=a.output, use_dpapi=(not a.plain_key))
 
 
 if __name__ == '__main__':
     main()
+

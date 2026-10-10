@@ -5,7 +5,7 @@
 职责：路径/配置、schema 指纹校验、SQLCipher 解密编排、私有表读取、
       40800 protobuf 解码、昵称/群名解析、行级容错游标。
 """
-import json, os, re, sqlite3, struct, subprocess, sys, time
+import json, logging, logging.handlers, os, re, sqlite3, struct, subprocess, sys, time
 from datetime import datetime, timedelta, timezone
 
 # ── 目录布局 ──────────────────────────────────────────────────────────────
@@ -69,19 +69,105 @@ DEFAULT_CONFIG = {
     "decrypt": ["nt_msg.db", "group_info.db", "profile_info.db"],
     "class_groups": [],
     "glossary_autoupdate": True,
+    "crawler": {
+        "bridge_port": 48920,
+        "batch_size": 30,
+        "request_delay_ms": 1000,
+        "max_retry": 3
+    },
 }
 
 
+
+# ── 日志分级 ──────────────────────────────────────────────────────────────
+_logger = None
+
+
+def _get_logger():
+    global _logger
+    if _logger is not None:
+        return _logger
+    _logger = logging.getLogger('qq-digest')
+    _logger.setLevel(logging.DEBUG)
+    _logger.propagate = False
+
+    # 控制台 handler（INFO+，保持原有 stdout 输出风格，只输出消息本身）
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter('%(message)s'))
+    _logger.addHandler(ch)
+
+    # 文件 handler（DEBUG+，按日滚动，保留 7 天）
+    try:
+        os.makedirs(LOGS, exist_ok=True)
+        fh = logging.handlers.TimedRotatingFileHandler(
+            os.path.join(LOGS, 'qq-digest.log'),
+            when='midnight', backupCount=7, encoding='utf-8'
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', '%H:%M:%S'))
+        _logger.addHandler(fh)
+    except Exception:
+        pass  # 日志文件失败不影响主流程
+
+    return _logger
+
+
 def log(*a):
-    print(*a, flush=True)
+    """INFO 级别日志，保持原有多参数拼接签名，调用方无需修改。"""
+    _get_logger().info(' '.join(str(x) for x in a))
+
+
+def log_debug(*a):
+    """DEBUG 级别日志（默认只写日志文件，控制台需 --verbose 才显示）。"""
+    _get_logger().debug(' '.join(str(x) for x in a))
+
+
+def log_warn(*a):
+    """WARNING 级别日志。"""
+    _get_logger().warning(' '.join(str(x) for x in a))
+
+
+def log_error(*a):
+    """ERROR 级别日志。"""
+    _get_logger().error(' '.join(str(x) for x in a))
+
+
+def set_log_level(verbose=False):
+    """设置控制台日志级别。verbose=True 时显示 DEBUG 信息。"""
+    _get_logger()
+    for h in _logger.handlers:
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+            h.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
     if os.path.exists(CONFIG):
-        with open(CONFIG, encoding='utf-8') as f:
-            cfg.update(json.load(f))
+        try:
+            with open(CONFIG, encoding='utf-8') as f:
+                cfg.update(json.load(f))
+        except Exception as e:
+            log_warn('[config] 读取 config.json 失败: %s' % e)
     return cfg
+
+
+def validate_config(cfg, require_account=True):
+    """校验 config.json 配置合法性，返回 (ok, errors_list)。"""
+    errors = []
+    acc = str(cfg.get('account') or '').strip()
+    if require_account:
+        if not acc or acc == 'YOUR_QQ':
+            errors.append('config.json 中未配置有效的 "account"（QQ号），请将 YOUR_QQ 替换为你的真实 QQ 号')
+        elif not acc.isdigit():
+            errors.append('config.json 中的 "account" (%r) 应为纯数字 QQ 号' % acc)
+    days = cfg.get('index_days', 30)
+    if not isinstance(days, (int, float)) or days <= 0:
+        errors.append('config.json 中的 "index_days" (%r) 必须为正数' % days)
+    dec = cfg.get('decrypt')
+    if not isinstance(dec, list) or not dec:
+        errors.append('config.json 中的 "decrypt" 必须为非空数据库列表')
+    return (len(errors) == 0), errors
 
 
 def save_config(cfg):
@@ -431,24 +517,108 @@ RKEY_CACHE = os.path.join(os.path.dirname(INDEX_DB), 'rkey.json')
 RKEY_TTL = 6 * 3600
 
 
+# ── DPAPI 密钥本地加密保护（Windows） ──────────────────────────────────────
+def dpapi_encrypt(raw_bytes):
+    """使用当前 Windows 登录用户的 DPAPI 凭据加密字节流。非 Windows 原样返回。"""
+    if os.name != 'nt':
+        return raw_bytes
+    import ctypes, ctypes.wintypes as wt
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wt.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+
+    buf = ctypes.create_string_buffer(raw_bytes, len(raw_bytes))
+    blob_in = DATA_BLOB(len(raw_bytes), buf)
+    blob_out = DATA_BLOB()
+    CRYPTPROTECT_UI_FORBIDDEN = 0x01
+    if not ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(blob_in), None, None, None, None,
+        CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(blob_out)
+    ):
+        raise OSError('DPAPI CryptProtectData failed: %d' % ctypes.GetLastError())
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def dpapi_decrypt(enc_bytes):
+    """使用当前 Windows 登录用户的 DPAPI 凭据解密字节流。非 Windows 原样返回。"""
+    if os.name != 'nt':
+        return enc_bytes
+    import ctypes, ctypes.wintypes as wt
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wt.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+
+    buf = ctypes.create_string_buffer(enc_bytes, len(enc_bytes))
+    blob_in = DATA_BLOB(len(enc_bytes), buf)
+    blob_out = DATA_BLOB()
+    CRYPTPROTECT_UI_FORBIDDEN = 0x01
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(blob_in), None, None, None, None,
+        CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(blob_out)
+    ):
+        raise OSError('DPAPI CryptUnprotectData failed: %d' % ctypes.GetLastError())
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+
+
+def protect_key_hex(key_hex, use_dpapi=True):
+    """将 64 位 hex 密钥用 DPAPI 封装为 'dpapi:<base64>'；失败或禁用时返回原 hex。"""
+    if not key_hex or not use_dpapi or os.name != 'nt' or key_hex.startswith('dpapi:'):
+        return key_hex
+    try:
+        import base64
+        enc = dpapi_encrypt(bytes.fromhex(key_hex))
+        return 'dpapi:' + base64.b64encode(enc).decode('ascii')
+    except Exception as e:
+        log_debug('DPAPI 加密密钥失败，回退明文存储: %r' % e)
+        return key_hex
+
+
+def unwrap_key_hex(stored_val):
+    """将 'dpapi:<base64>' 或明文 hex 统一还原为 64 位小端 hex 字符串。"""
+    if not stored_val:
+        return ''
+    if stored_val.startswith('dpapi:'):
+        import base64
+        enc = base64.b64decode(stored_val[6:])
+        return dpapi_decrypt(enc).hex()
+    return stored_val
+
+
 def load_rkey(max_age=RKEY_TTL):
-    """读缓存的 rkey；不存在或过期返回 None。"""
+    """读缓存的 rkey；不存在或过期返回 None。支持 DPAPI 封装。"""
     try:
         with open(RKEY_CACHE, encoding='utf-8') as f:
             d = json.load(f)
         if now_ts() - int(d.get('ts') or 0) <= max_age:
-            return d.get('rkey') or None
-    except Exception:
-        pass
+            rk = d.get('rkey') or ''
+            if rk.startswith('dpapi:'):
+                import base64
+                rk = dpapi_decrypt(base64.b64decode(rk[6:])).decode('utf-8')
+            return rk or None
+    except Exception as e:
+        log_debug('读取 rkey 缓存失败: %r' % e)
     return None
 
 
 def save_rkey(rkey):
     try:
+        val = rkey
+        if val and os.name == 'nt' and not val.startswith('dpapi:'):
+            try:
+                import base64
+                val = 'dpapi:' + base64.b64encode(dpapi_encrypt(val.encode('utf-8'))).decode('ascii')
+            except Exception as e:
+                log_debug('DPAPI 加密 rkey 失败: %r' % e)
         with open(RKEY_CACHE, 'w', encoding='utf-8') as f:
-            json.dump({'rkey': rkey, 'ts': now_ts()}, f)
-    except Exception:
-        pass
+            json.dump({'rkey': val, 'ts': now_ts()}, f)
+    except Exception as e:
+        log_debug('保存 rkey 缓存失败: %r' % e)
 
 
 def db_image_url(host, path, rkey):
@@ -497,21 +667,30 @@ def qq_path(*parts):
 
 def src_db(cfg, name):
     return qq_path(str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
+    return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'),
+                        str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
 
 
-def verify_keymap(km_path, cfg):
+def verify_keymap(km_path, cfg=None):
     """用 page1 的 HMAC 校验缓存密钥是否仍然有效（不需要 QQ 在运行）。"""
     import hashlib, hmac as _hmac
     if not os.path.exists(km_path):
         return False, '没有缓存'
-    with open(km_path, encoding='utf-8') as f:
-        km = json.load(f)
+    try:
+        with open(km_path, encoding='utf-8') as f:
+            km = json.load(f)
+    except Exception as e:
+        return False, '缓存文件损坏: %s' % e
     key_map, salt_files = km.get('key_map', {}), km.get('salt_files', {})
     checked = 0
     for sh, files in salt_files.items():
-        kh = key_map.get(sh)
-        if not kh:
+        kh_raw = key_map.get(sh)
+        if not kh_raw:
             return False, '缺少 salt %s 的密钥' % sh[:12]
+        try:
+            kh = unwrap_key_hex(kh_raw)
+        except Exception as e:
+            return False, 'DPAPI 解密密钥失败: %s' % e
         fp = files[0] if files else None
         if not fp or not os.path.exists(fp):
             continue
@@ -548,9 +727,19 @@ def ensure_keymap(cfg, force=False):
             log('[key] 复用缓存密钥（HMAC 校验通过: %s），本步骤无需 QQ 参与' % why)
             return km
         log('[key] 缓存密钥失效（%s）-> 需要 QQ 正在运行以重新提取' % why)
-    py = sys.executable
-    cmd = [py, os.path.join(HERE, 'ntqq_key.py'), '--qq', cfg['account'], '-o', km]
     log('[key] 从 QQ 进程内存提取密钥 ...')
+    try:
+        import ntqq_key
+        if hasattr(ntqq_key, 'extract_keys'):
+            ntqq_key.extract_keys(qq=str(cfg['account']), output=km)
+            if os.path.exists(km):
+                return km
+    except SystemExit:
+        raise
+    except Exception as e:
+        log_debug('进程内调用 ntqq_key.extract_keys 失败，回退子进程: %r' % e)
+    py = sys.executable
+    cmd = [py, os.path.join(HERE, 'ntqq_key.py'), '--qq', str(cfg['account']), '-o', km]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
     if r.returncode != 0 or not os.path.exists(km):
         log(r.stdout or '')
@@ -563,7 +752,7 @@ def ensure_keymap(cfg, force=False):
 
 
 def ensure_plain(cfg, km, name, force=False):
-    """确保 run/plain/<name> 存在且不比源文件旧。返回路径。"""
+    """确保 data/plain/<name> 存在且不比源文件旧。返回路径。"""
     src = src_db(cfg, name)
     if not os.path.exists(src):
         raise SystemExit('源库不存在: %s' % src)
@@ -571,6 +760,16 @@ def ensure_plain(cfg, km, name, force=False):
     if os.path.exists(dst) and not force:
         if os.path.getmtime(dst) >= os.path.getmtime(src):
             return dst
+    try:
+        import ntqq_decrypt
+        if hasattr(ntqq_decrypt, 'decrypt_db'):
+            ntqq_decrypt.decrypt_db(key_map_path=km, db_name=name, out_path=dst)
+            if os.path.exists(dst):
+                return dst
+    except SystemExit:
+        raise
+    except Exception as e:
+        log_debug('进程内调用 ntqq_decrypt.decrypt_db 失败，回退子进程: %r' % e)
     cmd = [sys.executable, os.path.join(HERE, 'ntqq_decrypt.py'),
            '--key-map', km, '--db', name, '--out', dst]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
@@ -607,7 +806,7 @@ def build_names(cfg):
                     if code and name:
                         group_names[int(code)] = str(name)
             except sqlite3.DatabaseError as e:
-                log('  [warn] %s 读群名失败: %s' % (s['table'], e))
+                log_warn('  [warn] %s 读群名失败: %s' % (s['table'], e))
         s = NS['group_member']
         try:
             for g, uid, card, nick in con.execute(
@@ -617,7 +816,7 @@ def build_names(cfg):
                     if nm:
                         member_names[(int(g), uid)] = nm
         except sqlite3.DatabaseError as e:
-            log('  [warn] group_member3 读群名片失败: %s' % e)
+            log_warn('  [warn] group_member3 读群名片失败: %s' % e)
         con.close()
 
     p = os.path.join(PLAIN, NS['profile']['db'])
@@ -625,11 +824,16 @@ def build_names(cfg):
         con = open_ro(p)
         s = NS['profile']
         try:
-            for uid, nick in con.execute('SELECT "%s","%s" FROM "%s"' % (s['uid'], s['nick'], s['table'])):
+            for uid, qq, nick in con.execute('SELECT "%s","%s","%s" FROM "%s"' % (s['uid'], s['qq'], s['nick'], s['table'])):
                 if uid and nick:
                     global_names[uid] = str(nick)
+                if qq and nick:
+                    try:
+                        global_names['qq:%d' % int(qq)] = str(nick)
+                    except (ValueError, TypeError):
+                        pass
         except sqlite3.DatabaseError as e:
-            log('  [warn] profile_info_v6 读昵称失败: %s' % e)
+            log_warn('  [warn] profile_info_v6 读昵称失败: %s' % e)
         con.close()
     return group_names, member_names, global_names
 
@@ -680,10 +884,10 @@ def iter_rows_desc(path, select_cols, table, where='', params=(), batch=2000,
         if stop:
             break
     if errors:
-        log('  [warn] 跳过 %d 次损坏读取' % errors)
+        log_warn('  [warn] 跳过 %d 次损坏读取' % errors)
 
 
-# ── 索引 ──────────────────────────────────────────────────────────────────
+# ── 索引与迁移框架 ────────────────────────────────────────────────────────
 INDEX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS messages(
@@ -709,18 +913,98 @@ CREATE TABLE IF NOT EXISTS media(
 );
 CREATE INDEX IF NOT EXISTS idx_media_ts ON media(ts);
 CREATE INDEX IF NOT EXISTS idx_media_group ON media(group_code, ts);
+CREATE TABLE IF NOT EXISTS c2c_messages(
+  msg_id INTEGER PRIMARY KEY,
+  ts INTEGER, day TEXT, hour INTEGER,
+  group_code INTEGER, group_name TEXT,
+  sender_uid TEXT, sender_qq INTEGER, sender_name TEXT,
+  direction INTEGER, msg_type INTEGER, subtype INTEGER,
+  kind TEXT, text TEXT, reply_seq INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_c2c_ts ON c2c_messages(ts);
+CREATE INDEX IF NOT EXISTS idx_c2c_group_ts ON c2c_messages(group_code, ts);
+CREATE TABLE IF NOT EXISTS c2c_groups(
+  group_code INTEGER PRIMARY KEY, group_name TEXT,
+  first_ts INTEGER, last_ts INTEGER, n INTEGER
+);
 """
+
+
+def _mig_1_media_host_path(con):
+    """v1: 为老版本 media 表补齐多媒体 CDN 原图 host/path 列。"""
+    cols = {r[1] for r in con.execute('PRAGMA table_info(media)')}
+    for c in ('host', 'path'):
+        if c not in cols:
+            con.execute('ALTER TABLE media ADD COLUMN %s TEXT' % c)
+
+
+def _mig_2_c2c_tables(con):
+    """v2: 确保私聊独立索引表 c2c_messages / c2c_groups 存在。"""
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS c2c_messages(
+      msg_id INTEGER PRIMARY KEY,
+      ts INTEGER, day TEXT, hour INTEGER,
+      group_code INTEGER, group_name TEXT,
+      sender_uid TEXT, sender_qq INTEGER, sender_name TEXT,
+      direction INTEGER, msg_type INTEGER, subtype INTEGER,
+      kind TEXT, text TEXT, reply_seq INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_c2c_ts ON c2c_messages(ts);
+    CREATE INDEX IF NOT EXISTS idx_c2c_group_ts ON c2c_messages(group_code, ts);
+    CREATE TABLE IF NOT EXISTS c2c_groups(
+      group_code INTEGER PRIMARY KEY, group_name TEXT,
+      first_ts INTEGER, last_ts INTEGER, n INTEGER
+    );
+    """)
+
+
+def _mig_3_fts5(con):
+    """v3: 建立基于 messages 外部内容的 FTS5 全文检索虚拟表。"""
+    try:
+        con.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+          text, content='messages', content_rowid='msg_id', tokenize='unicode61'
+        )
+        """)
+    except sqlite3.OperationalError as e:
+        log_debug('SQLite 环境不支持 FTS5，跳过全文索引创建: %s' % e)
+
+
+INDEX_MIGRATIONS = [
+    (1, 'media_host_path', _mig_1_media_host_path),
+    (2, 'c2c_tables', _mig_2_c2c_tables),
+    (3, 'messages_fts5', _mig_3_fts5),
+]
+
+
+def run_index_migrations(con):
+    """按版本号顺序执行 index.db 结构迁移。"""
+    r = con.execute("SELECT value FROM meta WHERE key='db_schema_version'").fetchone()
+    cur_ver = int(r[0]) if (r and str(r[0]).isdigit()) else 0
+    # 即使版本号已最新，也做一次幂等列检查以兼容未写入 db_schema_version 的旧库
+    _mig_1_media_host_path(con)
+    for ver, name, fn in INDEX_MIGRATIONS:
+        if cur_ver < ver:
+            log_debug('[db-migrate] 执行索引迁移 v%d (%s)' % (ver, name))
+            fn(con)
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('db_schema_version', ?)", (str(ver),))
+            cur_ver = ver
+    con.commit()
+
+
+def rebuild_fts(con):
+    """同步重建 messages_fts 全文索引（外部内容表，毫秒级完成）。"""
+    try:
+        con.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        con.commit()
+    except sqlite3.OperationalError as e:
+        log_debug('FTS5 rebuild 跳过: %s' % e)
 
 
 def open_index():
     ensure_dirs()
     con = sqlite3.connect(INDEX_DB)
     con.executescript(INDEX_SCHEMA)
-    # 迁移（2026-10-02）：老索引的 media 没有 host/path。这两列是从消息元素里
-    # 抠出来的「多媒体 CDN 原图地址」，配合内存里的 rkey 才能取到未点开过的图。
-    cols = {r[1] for r in con.execute('PRAGMA table_info(media)')}
-    for c in ('host', 'path'):
-        if c not in cols:
-            con.execute('ALTER TABLE media ADD COLUMN %s TEXT' % c)
-    con.commit()
+    run_index_migrations(con)
     return con
+
