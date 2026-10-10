@@ -1,6 +1,7 @@
 {
   "root": "D:/QQChatCache",
   "account": "YOUR_QQ",
+  "qq_data_dir": "C:/Users/YOUR_NAME/Documents/Tencent Files",
   "qq_exe": "C:/Program Files/Tencent/QQNT/QQ.exe",
   "index_days": 30,
   "decrypt": [
@@ -11,5 +12,5 @@
   "class_groups": [],
   "class_group_names": {},
   "glossary_autoupdate": true,
-  "_note": "root=数据根目录；account=QQ号；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；class_groups=班群号（总结会格外详细）"
+  "_note": "root=数据根目录；account=QQ号；qq_data_dir=QQ 数据目录（装 QQ 时改成非默认盘的话必须填，留空=文档\\Tencent Files）；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；class_groups=班群号（总结会格外详细）"
 }

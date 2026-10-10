@@ -23,14 +23,14 @@ import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, load_config, now_ts, fmt, local,
                        gchat_image_url, sniff_ext, MEDIA, log,
-                       load_rkey, save_rkey, db_image_url)
+                       load_rkey, save_rkey, db_image_url, qq_path)
 
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
 
 def pic_root(cfg):
-    return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'),
-                        str(cfg.get('account') or ''), 'nt_qq', 'nt_data', 'Pic')
+    """本机图片缓存目录（nt_data\Pic）。QQ 数据目录可配置，走 core 的 qq_path。"""
+    return qq_path(str(cfg.get('account') or ''), 'nt_qq', 'nt_data', 'Pic')
 
 
 def build_local_index(root):
