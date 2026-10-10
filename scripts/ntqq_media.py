@@ -22,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, load_config, now_ts, fmt, local,
+                       gchat_image_url, sniff_ext, MEDIA, log,
+                       load_rkey, save_rkey, db_image_url, qq_path)
                        gchat_image_url, sniff_ext, MEDIA, log, log_debug, set_log_level,
                        load_rkey, save_rkey, db_image_url)
 
@@ -29,8 +31,8 @@ UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
 
 def pic_root(cfg):
-    return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'),
-                        str(cfg.get('account') or ''), 'nt_qq', 'nt_data', 'Pic')
+    """本机图片缓存目录（nt_data\Pic）。QQ 数据目录可配置，走 core 的 qq_path。"""
+    return qq_path(str(cfg.get('account') or ''), 'nt_qq', 'nt_data', 'Pic')
 
 
 def build_local_index(root):
@@ -90,6 +92,17 @@ def _save(data, dst_dir, md5):
     with open(path, 'wb') as f:
         f.write(data)
     return path
+
+
+def find_cached(dst_dir, md5):
+    """如果之前已经下载到目标目录，直接返回已存路径。"""
+    sub = os.path.join(dst_dir, md5[:2])
+    if os.path.isdir(sub):
+        for ext in ('.jpg', '.png', '.gif', '.webp', '.bmp'):
+            p = os.path.join(sub, md5 + ext)
+            if os.path.isfile(p) and os.path.getsize(p) > 0:
+                return p
+    return None
 
 
 def fetch_db(host, path, rkey, md5, dst_dir, retries=1):
@@ -211,24 +224,28 @@ def main():
 
     def work(r):
         h = r['md5'].lower()
+        cached = find_cached(out_root, h)
+        if cached:
+            return r, 'cached', cached
         try:
             host, pth = r['host'] or '', r['path'] or ''
         except (IndexError, KeyError):
             host = pth = ''
-        # 默认先走多媒体 CDN：拿到的是逐张校验过 md5 的原图；
-        # 本机 Pic 命中虽快，但常只是缩略图（实测 16 张里 15 张 md5 与声明不符）。
+        # 默认优先走多媒体 CDN 原图；若显式指定 --prefer-local 则先查本机 Pic 缓存
         if not a.prefer_local and host and pth and rkey:
             st, val = fetch_db(host, pth, rkey, r['md5'], out_root)
             if st == 'ok':
                 return r, 'db', val
-        if a.prefer_local:
-            lp = pick_local(h)
-            if lp:
-                return r, 'local', lp
-        if host and pth and rkey:
+        # 本机 Pic 缓存查找（prefer_local 优先，或 CDN 失败后降级兜底）
+        lp = pick_local(h)
+        if lp:
+            return r, 'local', lp
+        # 若之前未尝试过 CDN（例如 prefer_local 但本地没有），尝试 CDN
+        if a.prefer_local and host and pth and rkey:
             st, val = fetch_db(host, pth, rkey, r['md5'], out_root)
             if st == 'ok':
                 return r, 'db', val
+        # 兜底旧 gchat 路径
         return r, *fetch(h, out_root)
 
     with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
@@ -249,7 +266,7 @@ def main():
     with open(mpath, 'w', encoding='utf-8') as f:
         for m in manifest:
             f.write(json.dumps(m, ensure_ascii=False) + chr(10))
-    ok = stats.get('ok', 0) + stats.get('local', 0) + stats.get('db', 0)
+    ok = stats.get('ok', 0) + stats.get('local', 0) + stats.get('db', 0) + stats.get('cached', 0)
     log('[media] 完成：成功 %d / %d = %.1f%%  用时 %.1f 分钟' % (ok, len(tasks), 100.0*ok/max(1,len(tasks)), (time.time()-t0)/60))
     log('[media] 明细: %s' % stats)
     log('[media] 清单: %s' % mpath)

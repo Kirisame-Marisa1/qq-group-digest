@@ -11,6 +11,9 @@ import ctypes, ctypes.wintypes as wt
 from ctypes import windll, byref, sizeof, create_string_buffer
 import struct, hashlib, hmac as hmac_mod, os, sys, json, argparse, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ntqq_core import load_config, qq_path  # noqa: E402
+
 PROCESS_VM_READ           = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 TH32CS_SNAPPROCESS        = 0x00000002
@@ -98,7 +101,13 @@ def read_mem(handle, addr, size):
 
 
 def db_dir(qq):
-    return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'), qq, 'nt_qq', 'nt_db')
+    """nt_db 目录。QQ 数据目录装 QQ 时可能被改到别的盘，所以读 config.json 的
+    qq_data_dir；配置里的 account 优先，为空时回退命令行的 --qq。"""
+    try:
+        qq = str(load_config().get('account') or qq)
+    except Exception:
+        pass
+    return qq_path(qq, 'nt_qq', 'nt_db')
 
 
 def collect_db_info(d):

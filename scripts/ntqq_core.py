@@ -63,6 +63,7 @@ EXT_HEADER_BYTES, PAGE_SIZE, SALT_SIZE, RESERVE_BYTES, IV_BYTES = 1024, 4096, 16
 DEFAULT_CONFIG = {
     "root": "",                       # 空 = 用 _default_root()（Windows: D:/QQChatCache）
     "account": "",
+    "qq_data_dir": "",                # QQ 数据目录；空 = %USERPROFILE%\Documents\Tencent Files
     "qq_exe": "C:/Program Files/Tencent/QQNT/QQ.exe",
     "index_days": 30,
     "decrypt": ["nt_msg.db", "group_info.db", "profile_info.db"],
@@ -644,7 +645,28 @@ def load_config_cached():
 
 
 # ── 解密编排 ──────────────────────────────────────────────────────────────
+def qq_data_dir():
+    """QQ 数据目录（装 QQ 时可改到别的盘，所以必须可配置）。
+
+    裸文本读 CONFIG，不走 ROOT：ROOT/KEYS 在本模块 import 期就已求值，
+    这里再依赖模块级常量会形成先后顺序问题。默认值保持原样（文档目录）。
+    """
+    try:
+        with open(CONFIG, encoding='utf-8') as f:
+            d = (json.load(f).get('qq_data_dir') or '').strip()
+    except Exception:
+        d = ''
+    d = d or os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files')
+    return os.path.expanduser(d).replace('\\', '/')
+
+
+def qq_path(*parts):
+    """拼 <QQ数据目录>/<QQ号>/nt_qq/... 下的路径。"""
+    return os.path.join(qq_data_dir(), *parts)
+
+
 def src_db(cfg, name):
+    return qq_path(str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
     return os.path.join(os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files'),
                         str(cfg.get('account') or ''), 'nt_qq', 'nt_db', name)
 

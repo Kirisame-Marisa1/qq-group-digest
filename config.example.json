@@ -1,6 +1,7 @@
 {
   "root": "D:/QQChatCache",
   "account": "YOUR_QQ",
+  "qq_data_dir": "C:/Users/YOUR_NAME/Documents/Tencent Files",
   "qq_exe": "C:/Program Files/Tencent/QQNT/QQ.exe",
   "index_days": 30,
   "decrypt": [
