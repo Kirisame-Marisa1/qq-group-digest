@@ -137,6 +137,11 @@ python scripts/ntqq_group_state.py --scan
 python scripts/ntqq_group_state.py --list
 python scripts/ntqq_group_state.py --list --in-group
 python scripts/ntqq_group_state.py --left <群号或群名片段>    # 手工补记一个已退的群
+
+# 缺口检测与漫游补全（可选扩展：填补离线断层与历史未漫游消息）
+python scripts/ntqq_gap.py --days 30                # 扫描 seq 断层与头部缺失
+python extension/install_bridge.py --install        # 安装 LiteLoaderQQNT 桥接插件
+python scripts/ntqq_crawler.py                      # 执行自适应流控拉取并直接入库
 ```
 
 ---

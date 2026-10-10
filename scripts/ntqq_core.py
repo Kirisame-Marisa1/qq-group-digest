@@ -68,6 +68,12 @@ DEFAULT_CONFIG = {
     "decrypt": ["nt_msg.db", "group_info.db", "profile_info.db"],
     "class_groups": [],
     "glossary_autoupdate": True,
+    "crawler": {
+        "bridge_port": 48920,
+        "batch_size": 30,
+        "request_delay_ms": 1000,
+        "max_retry": 3
+    },
 }
 
 

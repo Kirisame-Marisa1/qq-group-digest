@@ -11,5 +11,11 @@
   "class_groups": [],
   "class_group_names": {},
   "glossary_autoupdate": true,
-  "_note": "root=数据根目录；account=QQ号；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；class_groups=班群号（总结会格外详细）"
+  "crawler": {
+    "bridge_port": 48920,
+    "batch_size": 30,
+    "request_delay_ms": 1000,
+    "max_retry": 3
+  },
+  "_note": "root=数据根目录；account=QQ号；qq_exe=QQ主程序路径（读版本号用）；index_days=滚动索引天数；crawler=缺口漫游爬虫与桥接配置"
 }
