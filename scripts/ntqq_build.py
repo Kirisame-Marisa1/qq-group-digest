@@ -192,6 +192,7 @@ def main():
             ts = r[I['time']] or 0
             if ts < cut:
                 continue
+            d = local(ts) if ts else None
             max_ts = max(max_ts, ts)
             uid = r[I['sender_uid']] or ''
             sqq = r[I['sender_qq']] or 0
@@ -240,7 +241,6 @@ def main():
                     kind = 'forward'
             except Exception:
                 pass
-            d = local(ts) if ts else None
             buf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '', d.hour if d else -1,
                         g, group_names.get(g, ''), uid, sqq, name,
                         r[I['direction']] or 0, r[I['msg_type']] or 0, r[I['subtype']] or 0,
