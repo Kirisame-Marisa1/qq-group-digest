@@ -233,6 +233,7 @@ def check_schema(con, sc):
         return True, ['schema 文件未记录 structure，跳过版本漂移校验']
     got = live_structure(con)
     opt_tables = set(sc.get('added_tables_9936') or ())
+    opt_cols = set(sc.get('added_columns_9936') or ('40722',))
     problems = []
     for t, cols in want.items():
         if t not in got:
@@ -240,7 +241,7 @@ def check_schema(con, sc):
                 continue
             problems.append('表缺失: %s' % t)
             continue
-        missing = [c for c in cols if c not in got[t]]
+        missing = [c for c in cols if c not in got[t] and c not in opt_cols]
         if missing:
             problems.append('表 %s 缺列: %s' % (t, ','.join(missing)))
     if not problems:

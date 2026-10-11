@@ -206,14 +206,6 @@ class QQToolGUI(ctk.CTk):
             hover_color="#0063B1",
             **btn_style,
         ).pack(side="left", padx=10)
-        ctk.CTkButton(
-            row_a,
-            text="4️⃣ 导出分群切片",
-            command=self.run_slice,
-            fg_color="#0078D4",
-            hover_color="#0063B1",
-            **btn_style,
-        ).pack(side="left", padx=10)
 
         row_b = ctk.CTkFrame(btn_frame, fg_color="transparent")
         row_b.pack(fill="x", pady=(10, 0))
@@ -649,28 +641,6 @@ class QQToolGUI(ctk.CTk):
                 out_file,
             ]
             self._bg(self.run_command, cmd, "生成简报（%s）" % label_days)
-
-    def run_slice(self):
-        if not self.acc_entry.get().strip():
-            messagebox.showwarning("提示", "请先填写 QQ 号并保存配置！")
-            return
-        if not self.save_config():
-            return
-        days = self.get_selected_days()
-        label_days = self.day_label(days)
-        out_dir = os.path.join(
-            self.output_entry.get().replace("\\", "/"), f"slices_{label_days}"
-        )
-        os.makedirs(out_dir, exist_ok=True)
-        cmd = [
-            os.path.join(SCRIPTS_DIR, "ntqq_slice.py"),
-            "--active",
-            "--hours",
-            str(days * 24),
-            "--out-dir",
-            out_dir,
-        ]
-        self._bg(self.run_command, cmd, f"导出分群切片（{label_days}）")
 
     def run_auto_all(self):
         if not self.save_config():

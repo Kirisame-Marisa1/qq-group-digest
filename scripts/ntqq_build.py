@@ -77,6 +77,19 @@ def group_codes(sc):
     return sorted(codes)
 
 
+def _core_cols_ok(live, sc):
+    """检查 group_msg_table 的核心读取列是否完整。"""
+    if 'group_msg_table' not in live:
+        return False
+    gm = sc.get('group_msg_table') or {}
+    req = {gm[k] for k in KEYS if k in gm}
+    if 'day' in gm:
+        req.add(gm['day'])
+    req.add('40900')
+    have = set(live['group_msg_table'])
+    return req.issubset(have)
+
+
 def schema_gate(con, sc, schema_path):
     from ntqq_core import live_structure
     live = live_structure(con)
@@ -88,6 +101,7 @@ def schema_gate(con, sc, schema_path):
         log('[schema] 首次记录库结构（%d 张表）' % len(live))
         return True, []
     opt_tables = set(sc.get('added_tables_9936') or ())
+    opt_cols = set(sc.get('added_columns_9936') or ('40722',))
     problems = []
     for t, cols in recorded.items():
         if t not in live:
@@ -95,7 +109,7 @@ def schema_gate(con, sc, schema_path):
                 continue
             problems.append('表缺失: %s' % t)
             continue
-        miss = [c for c in cols if c not in live[t]]
+        miss = [c for c in cols if c not in live[t] and c not in opt_cols]
         if miss:
             problems.append('表 %s 缺列: %s' % (t, ','.join(miss)))
     for t in live:
@@ -109,6 +123,9 @@ def schema_gate(con, sc, schema_path):
                 % (sc.get('qq_version'), time.strftime('%Y-%m-%d %H:%M:%S')))
         for p in problems:
             f.write('- %s\n' % p)
+    if _core_cols_ok(live, sc):
+        log_warn('[schema] 检测到非核心表/列差异 %d 项（核心消息列完整，继续构建；详见 run/schema_report.md）' % len(problems))
+        return True, []
     return False, problems
 
 
@@ -204,6 +221,7 @@ def build_once(a):
         log('[source] 已解析加密库：%d 张表，%.1fs' % (len(sdb.tables), time.time() - t_dec))
         want_st = sc.get('structure')
         opt_tables = set(sc.get('added_tables_9936') or ())
+        opt_cols = set(sc.get('added_columns_9936') or ('40722',))
         probs = []
         got = SL.structure_of(sdb)
         if want_st:
@@ -213,11 +231,11 @@ def build_once(a):
                         continue
                     probs.append('表缺失: %s' % t)
                 else:
-                    miss = [c for c in cs if c not in got[t]]
+                    miss = [c for c in cs if c not in got[t] and c not in opt_cols]
                     if miss:
                         probs.append('表 %s 缺列: %s' % (t, ','.join(miss)))
         con = None
-        ok = not probs
+        ok = (not probs) or _core_cols_ok(got, sc)
         sroot, ssql = sdb.tables['group_msg_table']
         SCOLS = SL.cols_of(ssql)
     else:

@@ -1,5 +1,5 @@
 {
-  "qq_version": "9.9.27.45758",
+  "qq_version": "9.9.36-53644",
   "generated_at": "2026-10-10",
   "provenance": "字段语义来源：QQBackup/nt_msg_db_util (GPL-3.0) 的实测字段文档 + 本机样本复核 | 2026-10-10 在 9.9.36-53644 上复核：仅新增 3 张 AI 助手表，原有列无变化",
   "header_bytes": 1024,
@@ -604,5 +604,8 @@
     "ai_assistant_msg_table": "AI 助手会话消息（新增）",
     "group_ai_assistant_msg_table": "群 AI 助手消息（新增）",
     "ai_session_table": "AI 会话表（新增）"
-  }
+  },
+  "added_columns_9936": [
+    "40722"
+  ]
 }
