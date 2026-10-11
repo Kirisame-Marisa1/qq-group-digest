@@ -91,12 +91,12 @@ class TestInitAndBuild(unittest.TestCase):
         try:
             with open(tmp_cfg_path, 'w', encoding='utf-8') as f:
                 json.dump({
-                    'account': '2256817393',
-                    'account_root': 'D:/QQNT/Tencent Files/2256817393',
+                    'account': '123456789',
+                    'account_root': 'D:/QQNT/Tencent Files/123456789',
                 }, f)
             self.assertEqual(ntqq_core.qq_data_dir(), 'D:/QQNT/Tencent Files')
-            p = ntqq_core.qq_path('2256817393', 'nt_qq', 'nt_db').replace('\\', '/')
-            self.assertEqual(p, 'D:/QQNT/Tencent Files/2256817393/nt_qq/nt_db')
+            p = ntqq_core.qq_path('123456789', 'nt_qq', 'nt_db').replace('\\', '/')
+            self.assertEqual(p, 'D:/QQNT/Tencent Files/123456789/nt_qq/nt_db')
         finally:
             ntqq_core.CONFIG = old_cfg_path
 

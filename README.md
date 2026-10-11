@@ -166,10 +166,14 @@ python scripts/ntqq_group_state.py --list
 python scripts/ntqq_group_state.py --list --in-group
 python scripts/ntqq_group_state.py --left <群号或群名片段>    # 手工补记一个已退的群
 
-# 缺口检测与漫游补全（可选扩展：填补离线断层与历史未漫游消息）
-python scripts/ntqq_gap.py --days 30                # 扫描 seq 断层与头部缺失
-python extension/install_bridge.py --install        # 安装 LiteLoaderQQNT 桥接插件
-python scripts/ntqq_crawler.py                      # 执行自适应流控拉取并直接入库
+# 缺口体检与按 seq 补缺口（L1a / L1b：自建加载器 selfloader，零常驻、无本地监听端口）
+python tools/gap_audit.py --days 30 --top 18                                  # 体检静默窗口、逐日总量与 seq 覆盖率
+python tools/gap_plan.py --days 30                                            # 生成合并扫描段后的缺口表 injector/out/fill-plan.json
+powershell -ExecutionPolicy Bypass -File injector/run_selfloader.ps1          # 一键独立加载器注入取回 + SHA256 复检 + 恢复官方 QQ
+python scripts/ntqq_build.py --window 30d --source stream                     # 按需流式解密重建索引
+python tools/import_filled.py                                                 # 合并 filled-messages.jsonl 兜底副本入库
+python tools/coverage_check.py --days 30 --top 25                             # 四口径覆盖率验收（大段缺口归零即 100%）
+python tools/purge_filled.py                                                  # 校验「副本 ⊆ 索引」后清理副本
 ```
 
 ---

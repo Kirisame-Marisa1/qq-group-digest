@@ -8,3 +8,5 @@ keys/
 run/
 *.zip
 .agents/
+injector/out/
+injector/attempt-*/

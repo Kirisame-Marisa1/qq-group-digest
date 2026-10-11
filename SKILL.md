@@ -169,6 +169,35 @@ python 'scripts\ntqq_report.py' --group <群> --days 7 --anonymize --out '...'
     ```
 - **分级日志（`logs\qq-digest.log` 与 `--verbose`）**：控制台默认仅打印 `INFO+` 摘要，完整 `DEBUG+` 诊断信息按日滚动写入 `<root>\logs\qq-digest.log`（保留 7 天）；排查异常时可传 `--verbose` 在终端实时查看调试日志。
 
+### 2.5 缺口体检（L1a）与按 seq 主动补缺口（L1b 自建加载器）
+
+当用户要求「不能漏数据」「补一下缺的聊天记录」或体检发现活跃群覆盖率存在大段缺口时，走 `tools\` + `injector\` 自建加载器链路（**不依赖 NapCat 运行时或 LiteLoader 框架，不监听任何端口，跑完自动恢复官方纯净 QQ**）：
+
+```powershell
+# 1) L1a 缺口体检（只读 index.db）
+python 'tools\gap_audit.py' --days 30 --top 18
+python 'tools\coverage_check.py' --days 30 --top 25
+
+# 2) L1b 生成合并扫描段后的缺口表（自动过滤 <5 的服务端跳号噪声、合并邻近碎片、自动估算预算）
+python 'tools\gap_plan.py' --days 30
+#    产出：injector\out\fill-plan.json
+
+# 3) 一键独立加载器注入取回（备份 6 文件 SHA256 -> 注入 selfloader.mjs -> 按 seq 翻页拉取 -> 拆解复检 -> 重启官方 QQ）
+powershell -ExecutionPolicy Bypass -File 'injector\run_selfloader.ps1'
+
+# 4) 收尾三步（或直接跑 tools\refill_finish.ps1）：重建索引 -> 合并兜底副本 -> 验收覆盖率 -> 安全清理副本
+python 'scripts\ntqq_build.py' --window 30d --source stream
+python 'tools\import_filled.py'
+python 'tools\coverage_check.py' --days 30 --top 25
+python 'tools\purge_filled.py'
+```
+
+**关键机制（已固化在 `injector\selfloader.mjs` 与 `tools\` 中）**：
+- **`session.init` 4 参契约**：顺序为「先 `quickLoginWithUin` 登录拿 `uin/uid`，后调 `session.init(siCfg, new Qae(), new Hae(), otel)`」（三类共 12 个固定回调方法名，详见 `docs\SELFLOADER-SESSION-INIT.md`）。
+- **左端起手 + 真实游标翻页**：从每个扫描段最左端起调 `getMsgsBySeqAndCount(peer, cursor, count, false, true)`，`count` 在 `[320, 799]` 随机、间隔在 `2~9s` 随机，每次取回后按 `cursor = max(msgSeq) + 1` 推进。
+- **双保险落盘 + 子区间过滤**：除 QQ 内核自己写回 `nt_msg.db` 外，`selfloader.mjs` 按 `gap_plan.py` 附带的 `holes` 缺口子区间过滤写出 `filled-messages.jsonl`，再由 `import_filled.py` 用确定性负整数主键 `-(group * 10^9 + seq)` 幂等并入 `index.db`。
+- **用完即删**：`purge_filled.py` 先校验「副本 ⊆ 索引」，确认无任何独占记录后才删除副本文件。
+
 ## 3. QQ 要不要开着？
 
 - **第一次运行**或密钥缓存失效时：**必须 QQ 已登录并正在运行**（密钥只在进程内存）。

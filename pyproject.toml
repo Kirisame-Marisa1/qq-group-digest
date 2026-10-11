@@ -33,8 +33,7 @@ ntqq-decrypt = "ntqq_decrypt:main"
 ntqq-media = "ntqq_media:main"
 ntqq-glossary = "ntqq_glossary:main"
 ntqq-group-state = "ntqq_group_state:main"
-ntqq-gap = "ntqq_gap:main"
-ntqq-crawler = "ntqq_crawler:main"
+ntqq-slice = "ntqq_slice:main"
 
 [tool.setuptools]
 package-dir = {"" = "scripts"}
@@ -45,11 +44,10 @@ py-modules = [
     "ntqq_report",
     "ntqq_key",
     "ntqq_decrypt",
+    "ntqq_slice",
     "ntqq_media",
     "ntqq_glossary",
     "ntqq_group_state",
-    "ntqq_gap",
-    "ntqq_crawler",
 ]
 
 [tool.pytest.ini_options]

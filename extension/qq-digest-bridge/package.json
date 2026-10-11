@@ -1,9 +1,0 @@
-{
-  "name": "qq-digest-bridge",
-  "version": "1.0.0",
-  "description": "Bridge service for qq-group-digest to pull missing roaming chat history",
-  "main": "main.js",
-  "type": "commonjs",
-  "author": "qq-group-digest",
-  "license": "MIT"
-}
