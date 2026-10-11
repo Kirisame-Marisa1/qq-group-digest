@@ -652,7 +652,9 @@ def main():
     ap.add_argument('--min-conv', type=int, default=1)
     ap.add_argument('--show-media', action='store_true', help='正文里也列出图片/表情/语音')
     ap.add_argument('--brief', action='store_true', help='每群只输出最近的原文，适合多群速览')
-    ap.add_argument('--out', default=None, help='把报告写入文件')
+    ap.add_argument('--out', default=None, help='把报告写入文件（默认同时生成同名 .html 交互式可视化简报）')
+    ap.add_argument('--html', default=None, help='把交互式可视化简报写入指定 HTML 路径')
+    ap.add_argument('--no-html', action='store_true', help='传 --out 时不自动生成同名 .html 可视化简报')
     ap.add_argument('--json', default=None)
     ap.add_argument('--class-mode', action='store_true', help='班群模式：重点速览 + 不限篇幅逐条')
     ap.add_argument('--no-focus', action='store_true', help='不输出重点速览')
@@ -670,6 +672,14 @@ def main():
     msgs_given = a.max_msgs is not None
     if a.max_msgs is None:
         a.max_msgs = 150
+
+    md_out = a.out
+    html_out = a.html
+    if a.out and a.out.lower().endswith(('.html', '.htm')):
+        html_out = a.html or a.out
+        md_out = None
+    elif a.out and not a.no_html and not html_out:
+        html_out = os.path.splitext(a.out)[0] + '.html'
 
     msg_table = 'c2c_messages' if a.c2c else 'messages'
     grp_table = 'c2c_groups' if a.c2c else 'groups'
@@ -739,6 +749,7 @@ def main():
         if state_lines:
             out.append('')
 
+    src_mode_label = {'sql': '全盘解密（默认/快）', 'stream': '按需解密（备选/慢）', 'snap': '一致快照'}.get(src_mode, src_mode or '未记录')
     if a.member:
         out.append('# QQ 群友发言专报 · %s' % a.member)
     else:
@@ -746,13 +757,13 @@ def main():
     out.append('')
     out.append('> **数据截止 %s**（索引构建于 %s，距现在 %d 分钟；本次扫描 %s 行，读取错误 %s 次；取数方案：%s）'
                % (fmt(cutoff, '%Y-%m-%d %H:%M:%S'), fmt(built, '%Y-%m-%d %H:%M:%S'),
-                  int((now - cutoff) / 60) if cutoff else -1, scan_rows, errs,
-                  {'sql': '全盘解密（默认/快）', 'stream': '按需解密（备选/慢）', 'snap': '一致快照'}.get(src_mode, src_mode or '未记录')))
+                  int((now - cutoff) / 60) if cutoff else -1, scan_rows, errs, src_mode_label))
     if bad_days and not a.c2c:
         out.append('> ⚠ 数据缺口：有 %d 个「群-日」读取失败被跳过：%s'
                    % (len(bad_days), ', '.join('%s@%s' % (g, d) for g, d in bad_days[:12])))
     out.append('')
     out.append('- 查询窗口: %s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M')))
+    cur_n = prev_n = 0
     if not a.member:                     # --member 模式下全库总量统计没有意义，不印
         cur_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<=?' % msg_table, (t0, t1)).fetchone()[0]
         prev_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<?' % msg_table, (t0 - span, t0)).fetchone()[0]
@@ -760,6 +771,32 @@ def main():
                    % (cur_n, prev_n, '↑' if cur_n > prev_n else ('↓' if cur_n < prev_n else '→'), cur_n - prev_n))
     out.append('')
     result = {'cutoff_ts': cutoff, 'window': [t0, t1], 'groups': []}
+
+    meta_info = {
+        'title': ('QQ 群友发言专报 · %s' % a.member) if a.member else (
+            ('QQ 聊天提问 · %s' % a.ask) if a.ask else (
+                ('QQ 关键词检索 · %s' % a.search) if a.search else (
+                    'QQ 私聊可视化简报' if a.c2c else 'QQ 群聊可视化简报'
+                )
+            )
+        ),
+        'is_c2c': bool(a.c2c),
+        'anonymized': bool(a.anonymize),
+        'brief': bool(a.brief),
+        'class_mode': bool(a.class_mode),
+        'cutoff_str': fmt(cutoff, '%Y-%m-%d %H:%M:%S'),
+        'built_str': fmt(built, '%Y-%m-%d %H:%M:%S'),
+        'age_min': int((now - cutoff) / 60) if cutoff else -1,
+        'scan_rows': str(scan_rows),
+        'read_errors': str(errs),
+        'src_mode': src_mode_label,
+        'window_str': '%s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M')),
+        'cur_n': cur_n,
+        'prev_n': prev_n,
+        'delta': cur_n - prev_n,
+        'bad_days': [(scrub('%s@%s' % (g, d)) if a.anonymize else ('%s@%s' % (g, d))) for g, d in bad_days[:12]] if (bad_days and not a.c2c) else [],
+        'state_lines': [(scrub(ln.lstrip('> ').strip()) if a.anonymize else ln.lstrip('> ').strip()) for ln in state_lines],
+    }
 
     if a.ask:
         a_t0, label = parse_time_hint(a.ask, a.days or 7)
@@ -825,10 +862,18 @@ def main():
                     out.append('  > ' + t)
                 out.append('')
         shown = (strong or scored)[:a.max_msgs]
+        ask_items = []
         for cov, known_n, tsx, r, hit, idx_at in shown:
             out.append('- **%s** [%s] %s (相关度 %.2f) ｜命中 %s' % (fmt(tsx, '%m-%d %H:%M'),
                                                                  (r['group_name'] or r['group_code']),
                                                                  r['sender_name'], cov, '/'.join(hit[:6])))
+            ask_items.append({
+                'time': fmt(tsx, '%m-%d %H:%M'),
+                'sender': '%s [%s]' % (r['sender_name'], r['group_name'] or r['group_code']),
+                'kind': '相关度 %.2f' % cov,
+                'text': (r['text'] or '')[:400],
+                'is_notice': cov >= 0.45,
+            })
             lo = max(0, idx_at - a.ctx)
             hi = min(len(arows), idx_at + a.ctx + 1)
             if a.ctx > 0 and (hi - lo) > 1:
@@ -853,12 +898,28 @@ def main():
         result['ask'] = a.ask
         result['ask_hits'] = len(scored)
         text = chr(10).join(out)
-        if a.out:
-            with open(a.out, 'w', encoding='utf-8') as fh:
+        if a.anonymize:
+            text = scrub(text)
+        if md_out:
+            with open(md_out, 'w', encoding='utf-8') as fh:
                 fh.write(text)
-            log('[out] %s' % a.out)
-        else:
+            log('[out] %s' % md_out)
+        elif not html_out:
             print(text)
+        if html_out:
+            from ntqq_html import build_generic_payload, render_html_report
+            payload = build_generic_payload('ask', meta_info, text, extra={
+                'summary_cards': [
+                    {'label': '提问内容', 'value': a.ask, 'sub': '解析范围: ' + label},
+                    {'label': '目标范围', 'value': gdesc, 'sub': '窗口内 %d 条消息' % nwin},
+                    {'label': '命中结果', 'value': '%d 条' % len(scored), 'sub': '强相关 %d 条' % len(strong)},
+                ],
+                'items': ask_items,
+            })
+            html_str = render_html_report(payload)
+            with open(html_out, 'w', encoding='utf-8') as fh:
+                fh.write(html_str)
+            log('[html] %s (%.1f KB)' % (html_out, len(html_str.encode('utf-8')) / 1024.0))
         return
 
     if a.media_list:
@@ -887,7 +948,20 @@ def main():
         log('[media] %d 张候选 -> %s' % (len(mrows), a.media_list))
         return
 
+    html_mode = 'digest'
+    html_extra = {}
+    prepared = []
+    allrows = []
+    ANON = {}
+    cfg_class_groups = set()
+    try:
+        with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
+            cfg_class_groups = set(int(x) for x in json.load(fh).get('class_groups', []) if str(x).isdigit())
+    except Exception:
+        cfg_class_groups = set()
+
     if a.search:
+        html_mode = 'search'
         rows = search_messages(idx, a.search, t0, t1, msg_table=msg_table)
         conv = [r for r in rows if r['kind'] not in SYS_KINDS]
         out.append('## 关键词命中: %r —— %d 条（有效对话 %d 条）' % (a.search, len(rows), len(conv)))
@@ -896,21 +970,46 @@ def main():
         byg = Counter(r['group_code'] for r in rows)
         out.append('- 分布: ' + ', '.join('%s(%s)=%d' % (names.get(c) or '-', c, v) for c, v in byg.most_common(20)))
         out.append('')
+        s_items = []
         for r in rows[:a.max_msgs]:
-            out.append('%s [%s] %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), names.get(r['group_code']) or r['group_code'],
+            g_disp = names.get(r['group_code']) or r['group_code']
+            out.append('%s [%s] %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), g_disp,
                                            r['sender_name'], (r['text'] or '')[:200]))
+            s_items.append({
+                'time': fmt(r['ts'], '%m-%d %H:%M'),
+                'sender': '%s [%s]' % (r['sender_name'], g_disp),
+                'kind': r['kind'] or 'text',
+                'text': (r['text'] or '')[:360],
+                'is_notice': False,
+            })
         result['n'] = len(rows)
+        html_extra = {
+            'summary_cards': [
+                {'label': '检索关键词', 'value': a.search, 'sub': 'FTS5 全文 + 多词子串匹配'},
+                {'label': '命中消息数', 'value': '%d 条' % len(rows), 'sub': '有效对话 %d 条' % len(conv)},
+                {'label': '涉及群组数', 'value': '%d 个' % len(byg), 'sub': ''},
+            ],
+            'items': s_items,
+        }
     elif a.member:
-        result['member'] = member_report(idx, out, a.member, t0, t1,
-                                         group_spec=a.group, exact=a.exact, ctx=a.ctx,
-                                         max_lines=(a.max_msgs if msgs_given else 0),
-                                         all_matches=a.all_matches,
-                                         msg_table=msg_table, grp_table=grp_table)
+        html_mode = 'member'
+        mres = member_report(idx, out, a.member, t0, t1,
+                             group_spec=a.group, exact=a.exact, ctx=a.ctx,
+                             max_lines=(a.max_msgs if msgs_given else 0),
+                             all_matches=a.all_matches,
+                             msg_table=msg_table, grp_table=grp_table)
+        result['member'] = mres
+        html_extra = {
+            'summary_cards': [
+                {'label': '目标群友', 'value': a.member, 'sub': '精确匹配' if a.exact else '昵称子串匹配'},
+                {'label': '命中昵称数', 'value': '%d 个' % mres.get('matched', 0), 'sub': ''},
+                {'label': '累计发言量', 'value': '%d 条' % mres.get('n', 0), 'sub': ''},
+            ],
+            'items': [],
+        }
     else:
         if a.class_mode and not a.c2c:
-            with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
-                cfg = json.load(fh)
-            cg = [int(x) for x in cfg.get('class_groups', [])]
+            cg = sorted(cfg_class_groups)
             if not a.group and cg:
                 a.group = [str(x) for x in cg]
         if a.group:
@@ -934,7 +1033,6 @@ def main():
             for i, (c, _n) in enumerate(targets, 1):
                 ANON_LABELS[c] = ('私聊%d' if a.c2c else '群%d') % i
 
-        prepared = []
         for code, name in targets:
             rows = idx.execute('SELECT * FROM %s WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts' % msg_table,
                                (code, t0, t1)).fetchall()
@@ -954,11 +1052,11 @@ def main():
             out.append('|---|---|---|---|---|')
             for nconv, ntot, code, name, rows, _ in prepared:
                 np = len(set(r['sender_name'] for r in rows if r['sender_name'] not in ('系统', '未知')))
-                out.append('| %s (%s) | %d | %d | %d | %s |' % (name or '-', code_label(code), nconv, ntot, np,
+                disp_name = code_label(code) if a.anonymize else (name or '-')
+                out.append('| %s (%s) | %d | %d | %d | %s |' % (disp_name, code_label(code), nconv, ntot, np,
                                                            fmt(max(r['ts'] for r in rows), '%m-%d %H:%M')))
             out.append('')
         if not a.no_focus and not a.c2c:
-            allrows = []
             for _, _, _, _, rows, _ in prepared:
                 allrows.extend(rows)
             fb = focus_block(allrows, top=(60 if a.class_mode else 25), anon=ANON)
@@ -968,22 +1066,59 @@ def main():
                     out.append('> 上表只列「重要度 >= 2」的消息；下面是逐群详述。')
                     out.append('')
         for nconv, ntot, code, name, rows, prev in prepared:
-            txt, _ = block(code, name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
+            disp_name = code_label(code) if a.anonymize else name
+            txt, _ = block(code, disp_name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
             out.append(txt)
-            result['groups'].append({'code': code, 'name': name, 'conv': nconv, 'n': ntot,
+            result['groups'].append({'code': code_label(code) if a.anonymize else code,
+                                     'name': disp_name, 'conv': nconv, 'n': ntot,
                                      'first': min(r['ts'] for r in rows), 'last': max(r['ts'] for r in rows)})
 
     text = '\n'.join(out)
+    if a.anonymize:
+        text = scrub(text)
     if len(text) > a.max_chars:
         text = text[:a.max_chars] + '\n\n...[已按 --max-chars 截断]\n'
-    if a.out:
-        with open(a.out, 'w', encoding='utf-8') as f:
+    if md_out:
+        with open(md_out, 'w', encoding='utf-8') as f:
             f.write(text)
-        log('[out] %s (%d 字符, %d 行)' % (a.out, len(text), text.count(chr(10))))
-    else:
+        log('[out] %s (%d 字符, %d 行)' % (md_out, len(text), text.count(chr(10))))
+    elif not html_out:
         print(text)
+
+    if html_out:
+        try:
+            from ntqq_html import build_digest_payload, build_generic_payload, render_html_report
+            if html_mode == 'digest':
+                payload = build_digest_payload(
+                    meta_info=meta_info,
+                    prepared=prepared,
+                    focus_rows=allrows,
+                    fmt_fn=fmt,
+                    kw_fn=keywords,
+                    anon_map=ANON,
+                    anon_unknown_fn=anon_unknown,
+                    mask_names_fn=mask_names,
+                    code_label_fn=code_label,
+                    scrub_fn=scrub,
+                    class_groups=cfg_class_groups,
+                    max_msgs=a.max_msgs,
+                    show_media=a.show_media,
+                    brief=a.brief,
+                    markdown_text=text,
+                )
+            else:
+                payload = build_generic_payload(html_mode, meta_info, text, extra=html_extra)
+            html_str = render_html_report(payload)
+            with open(html_out, 'w', encoding='utf-8') as f:
+                f.write(html_str)
+            log('[html] %s (%.1f KB)' % (html_out, len(html_str.encode('utf-8')) / 1024.0))
+        except Exception as e:
+            log_warn('[html] 生成可视化 HTML 简报失败: %r' % e)
+
     if a.json:
         result['text'] = text
+        if html_out:
+            result['html'] = html_out
         with open(a.json, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
 

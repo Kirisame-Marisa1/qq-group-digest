@@ -234,6 +234,107 @@ class TestReport(unittest.TestCase):
         self.assertEqual(v, 133)
         self.assertEqual(nxt, 2)
 
+    def test_html_visual_digest_and_anonymize(self):
+        """测试 ntqq_html 交互式 HTML 简报生成、时段话题聚类、群友画像、XSS 防护与脱敏保证。"""
+        from ntqq_core import fmt
+        from ntqq_report import anon_unknown, code_label, ANON_LABELS
+        from ntqq_html import build_digest_payload, render_html_report
+
+        rows = [
+            {
+                'msg_id': 1, 'ts': 1760000100, 'day': '2026-10-09', 'hour': 2,
+                'group_code': 12345678, 'group_name': '2026级计算机1班通知群',
+                'sender_name': '王班长', 'kind': 'text',
+                'text': '@全体成员 重要通知：请大家明天下午提交软件工程课程设计报告，联系人 QQ 87654321 <script>alert(1)</script>'
+            },
+            {
+                'msg_id': 2, 'ts': 1760000200, 'day': '2026-10-09', 'hour': 2,
+                'group_code': 12345678, 'group_name': '2026级计算机1班通知群',
+                'sender_name': '李同学', 'kind': 'reply',
+                'text': '[引用 王班长: 重要通知] 收到！请问软件工程课程设计报告需要交纸质版吗？'
+            },
+            {
+                'msg_id': 3, 'ts': 1760000300, 'day': '2026-10-09', 'hour': 2,
+                'group_code': 12345678, 'group_name': '2026级计算机1班通知群',
+                'sender_name': '王班长', 'kind': 'text',
+                'text': '软件工程课程设计报告只需要提交电子版 PDF 即可。'
+            },
+        ]
+        prepared = [(3, 3, 12345678, '2026级计算机1班通知群', rows, 1)]
+        meta_info = {
+            'title': 'QQ 群聊可视化简报',
+            'is_c2c': False,
+            'anonymized': False,
+            'brief': False,
+            'class_mode': True,
+            'cutoff_str': '2026-10-09 12:00:00',
+            'built_str': '2026-10-09 12:00:05',
+            'age_min': 0,
+            'scan_rows': '3',
+            'read_errors': '0',
+            'src_mode': '一致快照',
+            'window_str': '2026-10-09 00:00 ~ 2026-10-09 12:00',
+            'cur_n': 3,
+            'prev_n': 1,
+            'delta': 2,
+            'bad_days': [],
+            'state_lines': [],
+        }
+
+        payload = build_digest_payload(
+            meta_info=meta_info,
+            prepared=prepared,
+            focus_rows=rows,
+            fmt_fn=fmt,
+            kw_fn=keywords,
+            class_groups={12345678},
+            markdown_text='# 测试报告',
+        )
+        self.assertEqual(payload['mode'], 'digest')
+        self.assertEqual(payload['kpis']['total_conv'], 3)
+        self.assertEqual(payload['kpis']['group_count'], 1)
+        self.assertTrue(len(payload['focus_items']) >= 1)
+        self.assertTrue(len(payload['groups'][0]['threads']) >= 1)
+        self.assertTrue(len(payload['groups'][0]['speakers']) >= 2)
+
+        html_out = render_html_report(payload)
+        self.assertIn('<!DOCTYPE html>', html_out)
+        self.assertIn('Bento 交互看板', html_out)
+        self.assertIn('纸上日报视图', html_out)
+        # 验证 <script> 标签被安全转义为 \u003cscript\u003e，不出现原生恶意脚本闭合
+        self.assertNotIn('<script>alert(1)</script>', html_out)
+        self.assertIn('\\u003cscript\\u003ealert(1)\\u003c/script\\u003e', html_out)
+
+        # 验证 --anonymize 脱敏模式下不泄露真名、群号或 QQ 号
+        ANON_LABELS[12345678] = '群1'
+        try:
+            anon_map = {12345678: {'王班长': '用户A', '李同学': '用户B'}}
+            meta_anon = dict(meta_info, anonymized=True)
+            payload_anon = build_digest_payload(
+                meta_info=meta_anon,
+                prepared=prepared,
+                focus_rows=rows,
+                fmt_fn=fmt,
+                kw_fn=keywords,
+                anon_map=anon_map,
+                anon_unknown_fn=anon_unknown,
+                mask_names_fn=mask_names,
+                code_label_fn=code_label,
+                scrub_fn=scrub,
+                class_groups={12345678},
+                markdown_text='# 脱敏报告',
+            )
+            html_anon = render_html_report(payload_anon)
+            self.assertNotIn('王班长', html_anon)
+            self.assertNotIn('李同学', html_anon)
+            self.assertNotIn('12345678', html_anon)
+            self.assertNotIn('87654321', html_anon)
+            self.assertIn('用户A', html_anon)
+            self.assertIn('用户B', html_anon)
+            self.assertIn('【QQ号】', html_anon)
+        finally:
+            ANON_LABELS.pop(12345678, None)
+
 
 if __name__ == '__main__':
     unittest.main()

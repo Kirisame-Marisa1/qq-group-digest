@@ -126,8 +126,9 @@ python scripts/ntqq_build.py --days 30 --clean-plain      # 构建完成后自�
 python scripts/ntqq_build.py --watch --interval 300
 
 # 多群速览 / 单群详述 / 关键词检索（支持 FTS5 多词检索） / 群列表
-python scripts/ntqq_report.py --active --hours 6 --brief
-python scripts/ntqq_report.py --group <群号或群名片段> --days 7
+# 注：传入 --out foo.md 时默认同时生成同名交互式可视化简报 foo.html（Bento 看板 + 纸上日报 + 对话气泡；加 --no-html 可关闭）
+python scripts/ntqq_report.py --active --hours 6 --brief --out ../output/digest.md
+python scripts/ntqq_report.py --group <群号或群名片段> --days 7 --html ../output/group.html
 python scripts/ntqq_report.py --search <关键词> --days 30
 python scripts/ntqq_report.py --search "关键词A 关键词B" --days 30
 python scripts/ntqq_report.py --list-groups
@@ -205,6 +206,10 @@ python tools/purge_filled.py                                                  # 
   **挂起退群判定**，避免批量误报
 
 ### 报告层
+- **零依赖交互式 HTML 可视化简报（`ntqq_html.py`）**：传 `--out <path>.md`（或 `--html <path>.html`）时自动同目录生成纯本地离线单文件 `.html` 可视化简报（GUI 亦支持一键打开），内置三种视图切换：
+  - **🍱 Bento 交互看板**：顶部 5 宫格指标卡、📌 重点雷达（`@全体` / 通知 / 班群 / 转发）、多群标签筛选与实时搜索、24 小时活跃柱状图、**时段话题自动聚类卡片 + 可展开原生 QQ 聊天气泡**、高光金句卡片、以及**群友画像榜**（自动打标 `👑 榜一担当` / `🌙 深夜夜猫子` / `📢 情报转发员` / `📝 长文输出王` / `💬 接梗互动王` / `🎯 话题焦点`）
+  - **📰 纸上日报视图**：双栏报纸排版风格，适合晨间速读与打印导出 PDF
+  - **📄 Markdown 原文视图**：支持一键复制完整 Markdown 原文
 - 逐日 / 逐时分布、参与人数、活跃时长、消息类型构成
 - 关键词提取（n-gram，无需分词库）、发言榜、被 @ 榜
 - 与上一个等长窗口的趋势对比

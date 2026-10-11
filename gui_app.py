@@ -57,6 +57,7 @@ class QQToolGUI(ctk.CTk):
 
         self.current_process = None
         self.busy = False
+        self.last_html_path = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(4, weight=1)
@@ -204,6 +205,14 @@ class QQToolGUI(ctk.CTk):
             command=self.run_report,
             fg_color="#0078D4",
             hover_color="#0063B1",
+            **btn_style,
+        ).pack(side="left", padx=10)
+        ctk.CTkButton(
+            row_a,
+            text="🌐 打开可视化简报 (HTML)",
+            command=self.open_latest_html,
+            fg_color="#6B46C1",
+            hover_color="#553C9A",
             **btn_style,
         ).pack(side="left", padx=10)
 
@@ -605,6 +614,35 @@ class QQToolGUI(ctk.CTk):
             self.run_command, cmd, "构建索引（最近 %s）" % self.day_label(days)
         )
 
+    def open_latest_html(self, path=None, silent=False):
+        target = path or self.last_html_path
+        out_dir = self.output_entry.get().replace("\\", "/")
+        if (not target or not os.path.exists(target)) and os.path.isdir(out_dir):
+            htmls = [
+                os.path.join(out_dir, fn)
+                for fn in os.listdir(out_dir)
+                if fn.lower().endswith(".html")
+            ]
+            if htmls:
+                htmls.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+                target = htmls[0]
+        if not target or not os.path.exists(target):
+            if not silent:
+                messagebox.showinfo(
+                    "提示",
+                    "尚未找到可视化简报 (.html)，请先点击「3️⃣ 生成简报」或「🚀 一键全自动」。",
+                )
+            return False
+        self.last_html_path = target
+        try:
+            if hasattr(os, "startfile"):
+                os.startfile(os.path.normpath(target))
+            self.log(f"🌐 已在浏览器中打开可视化简报: {target}")
+            return True
+        except Exception as e:
+            self.log(f"⚠️ 打开 HTML 简报失败: {e}")
+            return False
+
     def run_report(self):
         if not self.acc_entry.get().strip():
             messagebox.showwarning("提示", "请先填写 QQ 号并保存配置！")
@@ -619,6 +657,7 @@ class QQToolGUI(ctk.CTk):
         if member:
             safe_m = re.sub(r'[\\/:*?"<>|]+', "_", member)
             out_file = os.path.join(out_dir, f"群友发言报告_{safe_m}_{label_days}.md")
+            title = f"生成群友报告（{member} / {label_days}）"
             cmd = [
                 os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
                 "--member",
@@ -628,9 +667,9 @@ class QQToolGUI(ctk.CTk):
                 "--out",
                 out_file,
             ]
-            self._bg(self.run_command, cmd, f"生成群友报告（{member} / {label_days}）")
         else:
             out_file = os.path.join(out_dir, "我的群聊简报_%s.md" % label_days)
+            title = "生成简报（%s）" % label_days
             cmd = [
                 os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
                 "--active",
@@ -640,7 +679,15 @@ class QQToolGUI(ctk.CTk):
                 "--out",
                 out_file,
             ]
-            self._bg(self.run_command, cmd, "生成简报（%s）" % label_days)
+        html_file = os.path.splitext(out_file)[0] + ".html"
+
+        def _task():
+            code = self.run_command(cmd, title)
+            if code == 0 and os.path.exists(html_file):
+                self.last_html_path = html_file
+                self.open_latest_html(html_file, silent=True)
+
+        self._bg(_task)
 
     def run_auto_all(self):
         if not self.save_config():
@@ -681,7 +728,8 @@ class QQToolGUI(ctk.CTk):
             out_dir = self.output_entry.get().replace("\\", "/")
             os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, "我的群聊简报_%s.md" % label_days)
-            self.run_command(
+            html_file = os.path.splitext(out_file)[0] + ".html"
+            c3 = self.run_command(
                 [
                     os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
                     "--active",
@@ -693,6 +741,9 @@ class QQToolGUI(ctk.CTk):
                 ],
                 "步骤 3/3 生成简报（%s）" % label_days,
             )
+            if c3 == 0 and os.path.exists(html_file):
+                self.last_html_path = html_file
+                self.open_latest_html(html_file, silent=True)
             self.log("========== 一键全自动完毕 ==========")
 
         self._bg(sequence)

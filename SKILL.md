@@ -61,7 +61,7 @@ python 'scripts\ntqq_init.py'
 python 'scripts\ntqq_build.py' --days 30
 ```
 
-出报告（**加 --out 写到 output\，再用 read 分段读**）：
+出报告（**加 --out 写到 output\，默认同时生成同名 `.html` 交互式可视化简报；再用 read 分段读 `.md`**）：
 
 ```powershell
 python 'scripts\ntqq_report.py' --active --hours 6 --brief --max-msgs 40 --out '<root>\output\_tmp.md'
