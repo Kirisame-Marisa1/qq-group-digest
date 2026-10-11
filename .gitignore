@@ -7,3 +7,4 @@ media/
 keys/
 run/
 *.zip
+.agents/

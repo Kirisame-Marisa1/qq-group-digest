@@ -23,6 +23,11 @@ def plain(body, key=None):
 def decrypt_db(key_map_path, db_name, out_path, max_mb=0):
     """流式解密指定 NTQQ SQLCipher 数据库到 out_path，支持 DPAPI 加密与明文 key_map。"""
     global KEY
+    for _s in (sys.stdout, sys.stderr):          # 控制台可能是 GBK，别让中文输出崩掉
+        try:
+            _s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ntqq_core import unwrap_key_hex, log
 
@@ -61,6 +66,9 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0):
             if len(page) < PAGE_SIZE:
                 page += b'\x00' * (PAGE_SIZE - len(page))
             fo.write(page)
+            if (i & 8191) == 0 or i + 1 >= pages:
+                print('@@PROGRESS|{"stage":"decrypt","file":"%s","done":%d,"total":%d,"pct":%.1f}'
+                      % (db_name, i + 1, pages, (i + 1) * 100.0 / max(1, pages)), flush=True)
     sz = os.path.getsize(out_path)
     log('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
     with open(out_path, 'rb') as f:

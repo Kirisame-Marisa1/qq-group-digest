@@ -15,8 +15,9 @@ sys.path.insert(0, SCRIPTS_DIR)
 from ntqq_core import INDEX_SCHEMA, run_index_migrations, rebuild_fts, now_ts
 from ntqq_report import (
     keywords, parse_time_hint, anon_code, scrub, mask_names,
-    focus_block, search_messages, ask
+    focus_block, search_messages, ask, member_report
 )
+import ntqq_slice
 
 
 class TestReport(unittest.TestCase):
@@ -132,7 +133,7 @@ class TestReport(unittest.TestCase):
 
                 t0, t1 = 1760000000, 1760010000
 
-                # 插入群信息与群消息
+                # 插入群信息与群消息（含第 16 列 seq）
                 idx.execute(
                     "INSERT INTO groups VALUES (20001, '编译原理课程群', ?, ?, 3)",
                     (t0, t0 + 300)
@@ -140,16 +141,16 @@ class TestReport(unittest.TestCase):
                 group_msgs = [
                     (1, t0 + 10, '2026-10-01', 10, 20001, '编译原理课程群',
                      'u1', 111111, '张老师', 0, 1, 0, 'text',
-                     '今天我们讲解词法分析器与正则表达式自动机转换', None),
+                     '今天我们讲解词法分析器与正则表达式自动机转换', None, 1001),
                     (2, t0 + 120, '2026-10-01', 10, 20001, '编译原理课程群',
                      'u2', 222222, '助教', 0, 1, 0, 'text',
-                     '实验一编译器前端语法分析大作业将在下周三截止提交', None),
+                     '实验一编译器前端语法分析大作业将在下周三截止提交', None, 1002),
                     (3, t0 + 240, '2026-10-01', 10, 20001, '编译原理课程群',
                      'u3', 333333, '同学甲', 0, 1, 0, 'text',
-                     '请问食堂今天中午有什么好吃的推荐吗', None),
+                     '请问食堂今天中午有什么好吃的推荐吗', None, 1003),
                 ]
                 idx.executemany(
-                    "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     group_msgs
                 )
 
@@ -213,8 +214,25 @@ class TestReport(unittest.TestCase):
                 self.assertEqual(n_c2c, 2)
                 self.assertEqual(len(scored_c2c), 1)
                 self.assertEqual(scored_c2c[0][3]['msg_id'], 101)
+
+                # 6. 验证 member_report() 群友个人发言专报
+                out_lines = []
+                mres = member_report(idx, out_lines, '助教', t0, t1, ctx=1)
+                self.assertEqual(mres['matched'], 1)
+                self.assertEqual(mres['n'], 1)
+                report_txt = '\n'.join(out_lines)
+                self.assertIn('### 助教 · 概览', report_txt)
+                self.assertIn('实验一编译器前端语法分析大作业', report_txt)
             finally:
                 idx.close()
+
+    def test_ntqq_slice_helpers(self):
+        """测试 ntqq_slice 按需解析辅助函数 cols_of 与 varint。"""
+        sql = 'CREATE TABLE "group_msg_table"("40001" INT PRIMARY KEY, "40003" INT, "40800" BLOB, UNIQUE("40001"))'
+        self.assertEqual(ntqq_slice.cols_of(sql), ['40001', '40003', '40800'])
+        v, nxt = ntqq_slice.varint(b'\x81\x05', 0)
+        self.assertEqual(v, 133)
+        self.assertEqual(nxt, 2)
 
 
 if __name__ == '__main__':

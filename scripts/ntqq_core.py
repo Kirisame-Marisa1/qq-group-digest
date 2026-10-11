@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 #     logs/
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.dirname(HERE)                    # .../app
-CONFIG = os.path.join(APP, 'config.json')
+CONFIG = os.environ.get('NTQQ_CONFIG') or os.path.join(APP, 'config.json')
 SCHEMA_DIR = os.path.join(APP, 'schema')
 
 
@@ -78,6 +78,19 @@ DEFAULT_CONFIG = {
 }
 
 
+def _force_utf8_stdout():
+    """中文 Windows 控制台默认 GBK，一旦打印 emoji/生僻字就抛 UnicodeEncodeError，
+    把整个流程打断——实测「群改名」的 ✏ 就能崩掉建索引（GUI 因设了
+    PYTHONIOENCODING 而看不出来，CLI 用户会中招）。日志永远不该成为崩溃源。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
+
+_force_utf8_stdout()
+
 
 # ── 日志分级 ──────────────────────────────────────────────────────────────
 _logger = None
@@ -115,7 +128,15 @@ def _get_logger():
 
 def log(*a):
     """INFO 级别日志，保持原有多参数拼接签名，调用方无需修改。"""
-    _get_logger().info(' '.join(str(x) for x in a))
+    msg = ' '.join(str(x) for x in a)
+    try:
+        _get_logger().info(msg)
+    except UnicodeEncodeError:
+        try:
+            enc = getattr(sys.stdout, 'encoding', None) or 'utf-8'
+            print(msg.encode(enc, 'replace').decode(enc, 'replace'), flush=True)
+        except Exception:
+            pass
 
 
 def log_debug(*a):
@@ -211,9 +232,12 @@ def check_schema(con, sc):
     if not want:
         return True, ['schema 文件未记录 structure，跳过版本漂移校验']
     got = live_structure(con)
+    opt_tables = set(sc.get('added_tables_9936') or ())
     problems = []
     for t, cols in want.items():
         if t not in got:
+            if t in opt_tables:
+                continue
             problems.append('表缺失: %s' % t)
             continue
         missing = [c for c in cols if c not in got[t]]
@@ -776,26 +800,78 @@ def ensure_plain(cfg, km, name, force=False):
     if os.path.exists(dst) and not force:
         if os.path.getmtime(dst) >= os.path.getmtime(src):
             return dst
+    # 先解密到 .part，成功后再原子替换。否则中途被杀/断电会留下半截明文，
+    # 而上面的 mtime 判断会把它当成「最新缓存」直接拿去建索引。
+    part = dst + '.part'
+    for stale in (part,):
+        try:
+            if os.path.exists(stale):
+                os.remove(stale)
+        except OSError:
+            pass
     try:
         import ntqq_decrypt
         if hasattr(ntqq_decrypt, 'decrypt_db'):
-            ntqq_decrypt.decrypt_db(key_map_path=km, db_name=name, out_path=dst)
-            if os.path.exists(dst):
+            ntqq_decrypt.decrypt_db(key_map_path=km, db_name=name, out_path=part)
+            if os.path.exists(part):
+                os.replace(part, dst)
                 return dst
     except SystemExit:
+        try:
+            if os.path.exists(part):
+                os.remove(part)
+        except OSError:
+            pass
         raise
     except Exception as e:
         log_debug('进程内调用 ntqq_decrypt.decrypt_db 失败，回退子进程: %r' % e)
     cmd = [sys.executable, os.path.join(HERE, 'ntqq_decrypt.py'),
-           '--key-map', km, '--db', name, '--out', dst]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
-    if r.returncode != 0 or not os.path.exists(dst):
-        log(r.stdout or ''); log(r.stderr or '')
+           '--key-map', km, '--db', name, '--out', part]
+    # 流式读取子进程输出：@@PROGRESS 行直接转发给上层（GUI），其余先攒着；
+    # 成功时只回显 done 行，失败时把尾部打出来方便排障。
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, encoding='utf-8', errors='replace', bufsize=1)
+    tail = []
+    for line in p.stdout:
+        line = line.rstrip('\r\n')
+        if line.startswith('@@PROGRESS') or line.startswith('src='):
+            print(line, flush=True)
+        else:
+            tail.append(line)
+            if len(tail) > 30:
+                tail.pop(0)
+    p.wait()
+    if p.returncode != 0 or not os.path.exists(part):
+        for line in tail:
+            log(line)
+        try:
+            os.remove(part)
+        except OSError:
+            pass
         raise SystemExit('解密失败: %s' % name)
-    for line in (r.stdout or '').splitlines():
-        if 'done' in line or 'size=' in line:
+    for line in tail:
+        if line.startswith('done') or 'size=' in line:
             log('  ' + line.strip())
+    os.replace(part, dst)
     return dst
+
+
+def cleanup_plain(cfg):
+    """keep_plain=false 时删掉最大的明文缓存 nt_msg.db（其余小库保留，
+    供 ntqq_group_state 等在生成简报时继续使用）。返回释放的字节数。"""
+    freed = 0
+    for suffix in ('', '-wal', '-shm', '-journal'):
+        p = os.path.join(PLAIN, 'nt_msg.db' + suffix)
+        if os.path.exists(p):
+            try:
+                freed += os.path.getsize(p)
+                os.remove(p)
+            except OSError:
+                pass
+    if freed:
+        log('[plain] 已清理明文缓存 nt_msg.db（释放 %.1f GB）'
+            % (freed / 1073741824.0))
+    return freed
 
 
 def open_ro(path):
@@ -912,7 +988,7 @@ CREATE TABLE IF NOT EXISTS messages(
   group_code INTEGER, group_name TEXT,
   sender_uid TEXT, sender_qq INTEGER, sender_name TEXT,
   direction INTEGER, msg_type INTEGER, subtype INTEGER,
-  kind TEXT, text TEXT, reply_seq INTEGER
+  kind TEXT, text TEXT, reply_seq INTEGER, seq INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_m_ts ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_m_group_ts ON messages(group_code, ts);
@@ -986,10 +1062,18 @@ def _mig_3_fts5(con):
         log_debug('SQLite 环境不支持 FTS5，跳过全文索引创建: %s' % e)
 
 
+def _mig_4_messages_seq(con):
+    """v4: 为老版本 messages 表补齐 seq 列（群内连续消息序号 40003）。"""
+    cols = {r[1] for r in con.execute('PRAGMA table_info(messages)')}
+    if 'seq' not in cols:
+        con.execute('ALTER TABLE messages ADD COLUMN seq INTEGER')
+
+
 INDEX_MIGRATIONS = [
     (1, 'media_host_path', _mig_1_media_host_path),
     (2, 'c2c_tables', _mig_2_c2c_tables),
     (3, 'messages_fts5', _mig_3_fts5),
+    (4, 'messages_seq_col', _mig_4_messages_seq),
 ]
 
 
@@ -999,6 +1083,7 @@ def run_index_migrations(con):
     cur_ver = int(r[0]) if (r and str(r[0]).isdigit()) else 0
     # 即使版本号已最新，也做一次幂等列检查以兼容未写入 db_schema_version 的旧库
     _mig_1_media_host_path(con)
+    _mig_4_messages_seq(con)
     for ver, name, fn in INDEX_MIGRATIONS:
         if cur_ver < ver:
             log_debug('[db-migrate] 执行索引迁移 v%d (%s)' % (ver, name))

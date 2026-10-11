@@ -128,17 +128,18 @@ def ingest_messages_into_index(idx, group_code, group_name, raw_msgs):
         subtype = int(m.get('subMsgType') or 0)
 
         kind, text, reply_seq = extract_raw_text(m)
+        seq = int(m.get('msgSeq') or m.get('seq') or 0)
 
         rows.append((
             m_id, ts, day_str, hour,
             int(group_code), str(group_name),
             sender_uid, sender_qq, sender_name,
             direction, msg_type, subtype,
-            kind, text, reply_seq
+            kind, text, reply_seq, seq
         ))
 
     if rows:
-        idx.executemany('INSERT OR IGNORE INTO messages VALUES (%s)' % ','.join('?' * 15), rows)
+        idx.executemany('INSERT OR IGNORE INTO messages VALUES (%s)' % ','.join('?' * 16), rows)
         idx.commit()
 
     return len(rows)

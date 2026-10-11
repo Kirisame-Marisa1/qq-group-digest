@@ -137,19 +137,45 @@ def detect_gaps_from_index(idx_path, cut_ts, group_filter=None, group_names=None
         except Exception as e:
             log('[gap] 读取 bad_days 失败: %s' % e)
 
-        # 2. 检查大段离线时间断层 (Time Gap > 48h)
+        # 2. 检查序号断层 (seq_gap，若 messages.seq 已填充) 与大段离线时间断层 (Time Gap > 48h)
         target_groups = [group_filter] if group_filter else [
             r[0] for r in con.execute('SELECT DISTINCT group_code FROM messages WHERE ts >= ?', (cut_ts,)).fetchall()
         ]
+        msg_cols = {r[1] for r in con.execute('PRAGMA table_info(messages)')}
+        has_seq = 'seq' in msg_cols
 
         for g in target_groups:
-            cur = con.execute('SELECT ts FROM messages WHERE group_code = ? AND ts >= ? ORDER BY ts ASC', (g, cut_ts))
-            rows = cur.fetchall()
+            if has_seq:
+                rows = con.execute(
+                    'SELECT seq, ts FROM messages WHERE group_code = ? AND ts >= ? ORDER BY ts ASC, seq ASC',
+                    (g, cut_ts)
+                ).fetchall()
+            else:
+                rows = [(None, r[0]) for r in con.execute(
+                    'SELECT ts FROM messages WHERE group_code = ? AND ts >= ? ORDER BY ts ASC',
+                    (g, cut_ts)
+                ).fetchall()]
             if not rows:
                 continue
 
+            prev_seq = None
             prev_ts = None
-            for (ts,) in rows:
+            for seq, ts in rows:
+                if seq and seq > 0:
+                    if prev_seq is not None and (seq - prev_seq) > 1:
+                        gap_count = seq - prev_seq - 1
+                        gaps.append({
+                            'group_code': g,
+                            'group_name': group_names.get(g, str(g)),
+                            'type': 'seq_gap',
+                            'start_seq': prev_seq + 1,
+                            'end_seq': seq - 1,
+                            'count': gap_count,
+                            'time_start': fmt(prev_ts, '%Y-%m-%d %H:%M') if prev_ts else '未知',
+                            'time_end': fmt(ts, '%Y-%m-%d %H:%M') if ts else '未知',
+                            'description': '内层断层：缺失 %d 条消息 (seq %d ~ %d)' % (gap_count, prev_seq + 1, seq - 1)
+                        })
+                    prev_seq = seq
                 if prev_ts is not None and (ts - prev_ts) > 86400 * 2: # 超过 48 小时完全无消息
                     gaps.append({
                         'group_code': g,

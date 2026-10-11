@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""从 cached/index.db 生成报告：单群 / 多群汇总 / 关键词检索。
+"""从 cached/index.db 生成报告：单群 / 多群汇总 / 关键词检索 / 群友发言专报。
 
 用法示例：
   ntqq_report.py --active --hours 6 --brief
   ntqq_report.py --group <群号> --hours 48
   ntqq_report.py --search <关键词> --days 7
+  ntqq_report.py --member <群友昵称> --days 30
 """
-import argparse, json, math, os, re, sqlite3, sys
+import argparse, bisect, json, math, os, re, sqlite3, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, now_ts, fmt, parse_when, log, log_debug, log_warn, set_log_level,
@@ -235,7 +236,8 @@ def _lcs_len(a, b):
 
 def load_aliases():
     try:
-        return json.load(open(os.path.join(APP, 'config.json'), encoding='utf-8')).get('group_aliases', {})
+        with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
+            return json.load(fh).get('group_aliases', {})
     except Exception:
         return {}
 
@@ -468,21 +470,185 @@ def scrub(text):
     return QQNUM.sub('【QQ号】', text)
 
 
+# ── 群友个人发言专报 ────────────────────────────────────────────────────────
+AT_RE = re.compile(r'@([^\s@|]{1,24})')
+
+
+def _clip(s, n=1200):
+    s = s or ''
+    return s if len(s) <= n else s[:n] + '…[+%d字]' % (len(s) - n)
+
+
+def member_report(idx, out, who, t0, t1, group_spec=None, exact=False, ctx=2,
+                  max_lines=0, detail_top=5, all_matches=False,
+                  msg_table='messages', grp_table='groups'):
+    """某位群友的发言专报：概览 + 逐条原文（正文不截断，可选带上文）。
+
+    who        : 昵称（默认子串匹配，exact=True 时完全相等）
+    group_spec : 限定群（群号或群名片段）的列表；None = 全部群
+    ctx        : 每条发言前带几条其他人的上文（0 = 不带）
+    max_lines  : 最多印多少条自己的发言（0 = 不限）
+    """
+    out.append('## 群友发言：%s' % who)
+    out.append('')
+    where = 'sender_name %s ? AND ts>=? AND ts<=?' % ('=' if exact else 'LIKE')
+    params = [who if exact else '%' + who + '%', t0, t1]
+
+    codes = None
+    if group_spec:
+        codes = []
+        for g in idx.execute('SELECT group_code, group_name FROM %s' % grp_table):
+            for s in group_spec:
+                s = (s or '').strip()
+                if not s:
+                    continue
+                if str(g['group_code']) == s or (g['group_name'] and s in g['group_name']) or s in str(g['group_code']):
+                    if g['group_code'] not in codes:
+                        codes.append(g['group_code'])
+        if not codes:
+            out.append('- ⚠ 没匹配到群 %s；用 `--list-groups` 看群名/群号。' % group_spec)
+            return {'matched': 0, 'n': 0}
+        where += ' AND group_code IN (%s)' % ','.join('?' * len(codes))
+        params += codes
+
+    rows = idx.execute('SELECT * FROM %s WHERE %s ORDER BY ts' % (msg_table, where), params).fetchall()
+    out.append('- 查询窗口: %s ~ %s%s'
+               % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M'),
+                  ('；限定群 %s' % '、'.join(str(c) for c in codes)) if codes else '（全部群）'))
+    if not rows:
+        out.append('')
+        out.append('> 窗口内没有该昵称的发言。放宽窗口（`--days`/`--since`）或换昵称片段再试。')
+        return {'matched': 0, 'n': 0}
+
+    by = {}
+    for r in rows:
+        by.setdefault(r['sender_name'], []).append(r)
+    out.append('- 命中 **%d 个昵称**，合计 **%d 条**' % (len(by), len(rows)))
+    out.append('')
+    if len(by) > 1:
+        out.append('| 昵称 | 条数 | 首发 | 末次 | 主要群 |')
+        out.append('|---|---|---|---|---|')
+        for nm, rs in sorted(by.items(), key=lambda x: -len(x[1])):
+            gl = Counter((r['group_name'] or str(r['group_code'])) for r in rs)
+            out.append('| %s | %d | %s | %s | %s |' % (
+                nm, len(rs), fmt(min(r['ts'] for r in rs), '%m-%d %H:%M'),
+                fmt(max(r['ts'] for r in rs), '%m-%d %H:%M'),
+                '、'.join('%s(%d)' % (k, v) for k, v in gl.most_common(3))))
+        out.append('')
+        out.append('> 命中多个昵称说明它们**不是同一个人**，下面逐个给出概览与原文。')
+        out.append('')
+
+    order = sorted(by.items(), key=lambda x: -len(x[1]))
+    if len(order) > detail_top and not all_matches:
+        out.append('> 命中 %d 个昵称，默认只展开条数最多的前 %d 个；要全部展开加 --all-matches，'
+                   '用更长的昵称片段或 --exact 可以一次命中一个。' % (len(order), detail_top))
+        out.append('')
+        order = order[:detail_top]
+
+    for nm, rs in order:
+        conv = [r for r in rs if r['kind'] not in SYS_KINDS]
+        days = sorted({r['day'] for r in rs})
+        out.append('### %s · 概览' % nm)
+        out.append('')
+        out.append('- 发言 **%d 条**（有效对话 %d），覆盖 **%d 天**（%s）'
+                   % (len(rs), len(conv), len(days), '、'.join(days[:24])))
+        out.append('- 内容构成: ' + ', '.join('%s=%d' % (k, v)
+                   for k, v in Counter(r['kind'] for r in rs).most_common()))
+        hd = Counter(r['hour'] for r in rs)
+        mx = max(hd.values()) if hd else 1
+        out.append('- 活跃时段（时:条数）:')
+        for h in range(24):
+            if hd.get(h):
+                out.append('    %02d时 %-12s %d' % (h, bar(hd[h], mx, 12), hd[h]))
+        ats = Counter()
+        for r in conv:
+            for m in AT_RE.findall(r['text'] or ''):
+                ats[m.strip()] += 1
+        if ats:
+            out.append('- @ 过的人: ' + '、'.join('%s(%d)' % (k, v) for k, v in ats.most_common(10)))
+        safe = nm.replace('%', '').replace('_', '')
+        if safe:
+            gcodes = sorted({r['group_code'] for r in rs})
+            q = 'SELECT * FROM %s WHERE ts>=? AND ts<=? AND sender_name<>? AND text LIKE ?' % msg_table
+            pp = [t0, t1, nm, '%' + safe + '%']
+            if gcodes:
+                q += ' AND group_code IN (%s)' % ','.join('?' * len(gcodes))
+                pp += gcodes
+            be = idx.execute(q, pp).fetchall()
+            if be:
+                out.append('- 被别人 @/提到 **%d 次**，主要来自: %s' % (len(be),
+                           '、'.join('%s(%d)' % (k, v)
+                                     for k, v in Counter(r['sender_name'] for r in be).most_common(8))))
+        kw = keywords([r['text'] for r in conv if r['text']], min_count=3, topk=15)
+        if kw:
+            out.append('- 高频词: ' + ', '.join('%s(%d)' % (k, v) for k, v in kw))
+        out.append('')
+
+        out.append('### %s · 逐条原文（正文不截断%s）'
+                   % (nm, ('，每条带 %d 条上文' % ctx) if ctx else ''))
+        out.append('')
+        cache, shown, curday, last_ctx = {}, 0, None, set()
+        for r in rs:
+            if r['day'] != curday:
+                curday = r['day']
+                out.append('**%s**' % curday)
+                out.append('')
+            if ctx:
+                code = r['group_code']
+                if code not in cache:
+                    cache[code] = idx.execute(
+                        'SELECT ts, sender_name, text, kind FROM %s WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts'
+                        % msg_table,
+                        (code, t0 - 3600, t1)).fetchall()
+                arr = cache[code]
+                tss = [x['ts'] for x in arr]
+                i = bisect.bisect_left(tss, r['ts'])
+                cur_ctx = [p for p in arr[max(0, i - ctx):i]
+                           if (p['text'] or '').strip() and p['kind'] not in SYS_KINDS]
+                for p in cur_ctx:
+                    # 连续两条自己的发言，上文大量重叠——只印上一轮没印过的那几条
+                    if (p['ts'], p['sender_name']) in last_ctx:
+                        continue
+                    out.append('    ↳ %s %s: %s'
+                               % (fmt(p['ts'], '%H:%M'), p['sender_name'], _clip(p['text'], 200)))
+                last_ctx = {(p['ts'], p['sender_name']) for p in cur_ctx}
+            loc = '' if (len(by) == 1 and not codes) else '[%s] ' % (r['group_name'] or r['group_code'])
+            body = _clip(r['text']) if (r['text'] or '').strip() else '[%s]' % r['kind']
+            out.append('%s %s%s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), loc, nm, body))
+            shown += 1
+            if max_lines and shown >= max_lines:
+                out.append('')
+                out.append('> 已达 --max-msgs 上限（%d 条），后面的没印；调大 --max-msgs 或收窄窗口。' % max_lines)
+                break
+        out.append('')
+
+    return {'matched': len(by), 'n': len(rows),
+            'names': [{'name': nm, 'n': len(rs)} for nm, rs in sorted(by.items(), key=lambda x: -len(x[1]))]}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ask', default=None, help='自然语言提问，例如「某群今天聊某话题了吗」')
-    ap.add_argument('--ctx', type=int, default=3, help='--ask 时每条命中前后带几条上下文（默认 3）')
+    ap.add_argument('--ctx', type=int, default=3, help='--ask / --member 时每条命中前带几条上下文（默认 3；--member 传 0 可关掉）')
     ap.add_argument('--anonymize', action='store_true', help='昵称->代号，并抹掉 QQ 号（外传用）')
     ap.add_argument('--active', action='store_true')
     ap.add_argument('--group', action='append', default=[])
     ap.add_argument('--c2c', action='store_true', help='查询私聊记录（与群聊完全隔离，需先 ntqq_build.py --include-c2c）')
     ap.add_argument('--contact', action='append', default=[], help='指定私聊联系人 QQ 号或昵称片段（自动开启 --c2c）')
     ap.add_argument('--search', default=None)
+    ap.add_argument('--member', default=None,
+                    help='某位群友的昵称（默认子串匹配）。输出「概览 + 逐条原文」，正文不截断；'
+                         '配合 --group 限定群、--exact 精确匹配、--days/--since 限定窗口')
+    ap.add_argument('--exact', action='store_true', help='--member 时要求昵称完全相等')
+    ap.add_argument('--all-matches', action='store_true',
+                    help='--member 命中多个昵称时全部展开（默认只展开条数最多的前 5 个）')
     ap.add_argument('--list-groups', action='store_true')
     ap.add_argument('--since'); ap.add_argument('--until')
     ap.add_argument('--hours', type=float); ap.add_argument('--days', type=float)
-    ap.add_argument('--max-msgs', type=int, default=150)
-    ap.add_argument('--max-chars', type=int, default=200000)
+    ap.add_argument('--max-msgs', type=int, default=None,
+                    help='最多印多少条（群报告默认 150；--member 模式默认为不限，只在显式指定时才截断）')
+    ap.add_argument('--max-chars', type=int, default=200000,
+                    help='整份报告的全局字符上限（不是每行！）。超出即把整篇从尾巴截断并附一行标记；默认 %(default)s。')
     ap.add_argument('--min-conv', type=int, default=1)
     ap.add_argument('--show-media', action='store_true', help='正文里也列出图片/表情/语音')
     ap.add_argument('--brief', action='store_true', help='每群只输出最近的原文，适合多群速览')
@@ -501,6 +667,9 @@ def main():
     if a.contact:
         a.c2c = True
         a.group.extend(a.contact)
+    msgs_given = a.max_msgs is not None
+    if a.max_msgs is None:
+        a.max_msgs = 150
 
     msg_table = 'c2c_messages' if a.c2c else 'messages'
     grp_table = 'c2c_groups' if a.c2c else 'groups'
@@ -512,6 +681,7 @@ def main():
     cutoff = int(meta('cutoff_ts') or 0)
     built = int(meta('built_at') or 0)
     scan_rows = meta('scan_rows'); errs = meta('read_errors')
+    src_mode = meta('source_mode', '')
     bad_days = json.loads(meta('bad_days', '[]') or '[]')
 
     if a.list_groups:
@@ -534,7 +704,6 @@ def main():
 
     out = []
     # ── 群变更提示（新入群 / 退群 / 回归 / 改名）─────────────────────────────
-    #  不排除任何群、不做分类——只把「跟你上次看的时候比变了什么」打在最前面。
     state_lines = []
     if not a.no_group_state and not a.c2c:
         try:
@@ -570,20 +739,25 @@ def main():
         if state_lines:
             out.append('')
 
-    out.append('# QQ 私聊报告' if a.c2c else '# QQ 群聊报告')
+    if a.member:
+        out.append('# QQ 群友发言专报 · %s' % a.member)
+    else:
+        out.append('# QQ 私聊报告' if a.c2c else '# QQ 群聊报告')
     out.append('')
-    out.append('> **数据截止 %s**（索引构建于 %s，距现在 %d 分钟；本次扫描 %s 行，读取错误 %s 次）'
+    out.append('> **数据截止 %s**（索引构建于 %s，距现在 %d 分钟；本次扫描 %s 行，读取错误 %s 次；取数方案：%s）'
                % (fmt(cutoff, '%Y-%m-%d %H:%M:%S'), fmt(built, '%Y-%m-%d %H:%M:%S'),
-                  int((now - cutoff) / 60) if cutoff else -1, scan_rows, errs))
+                  int((now - cutoff) / 60) if cutoff else -1, scan_rows, errs,
+                  {'sql': '全盘解密（默认/快）', 'stream': '按需解密（备选/慢）', 'snap': '一致快照'}.get(src_mode, src_mode or '未记录')))
     if bad_days and not a.c2c:
         out.append('> ⚠ 数据缺口：有 %d 个「群-日」读取失败被跳过：%s'
                    % (len(bad_days), ', '.join('%s@%s' % (g, d) for g, d in bad_days[:12])))
     out.append('')
     out.append('- 查询窗口: %s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M')))
-    cur_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<=?' % msg_table, (t0, t1)).fetchone()[0]
-    prev_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<?' % msg_table, (t0 - span, t0)).fetchone()[0]
-    out.append('- 窗口内总消息 %d 条；上一个等长窗口 %d 条；趋势 %s（%+d）'
-               % (cur_n, prev_n, '↑' if cur_n > prev_n else ('↓' if cur_n < prev_n else '→'), cur_n - prev_n))
+    if not a.member:                     # --member 模式下全库总量统计没有意义，不印
+        cur_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<=?' % msg_table, (t0, t1)).fetchone()[0]
+        prev_n = idx.execute('SELECT COUNT(*) FROM %s WHERE ts>=? AND ts<?' % msg_table, (t0 - span, t0)).fetchone()[0]
+        out.append('- 窗口内总消息 %d 条；上一个等长窗口 %d 条；趋势 %s（%+d）'
+                   % (cur_n, prev_n, '↑' if cur_n > prev_n else ('↓' if cur_n < prev_n else '→'), cur_n - prev_n))
     out.append('')
     result = {'cutoff_ts': cutoff, 'window': [t0, t1], 'groups': []}
 
@@ -692,7 +866,8 @@ def main():
         want = None
         if not a.group and a.class_mode:
             cfgp = os.path.join(APP, 'config.json')
-            want = set(int(x) for x in json.load(open(cfgp, encoding='utf-8')).get('class_groups', []))
+            with open(cfgp, encoding='utf-8') as fh:
+                want = set(int(x) for x in json.load(fh).get('class_groups', []))
         elif a.group:
             want = set()
             allg = [r[0] for r in idx.execute('SELECT group_code FROM groups')]
@@ -725,9 +900,16 @@ def main():
             out.append('%s [%s] %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), names.get(r['group_code']) or r['group_code'],
                                            r['sender_name'], (r['text'] or '')[:200]))
         result['n'] = len(rows)
+    elif a.member:
+        result['member'] = member_report(idx, out, a.member, t0, t1,
+                                         group_spec=a.group, exact=a.exact, ctx=a.ctx,
+                                         max_lines=(a.max_msgs if msgs_given else 0),
+                                         all_matches=a.all_matches,
+                                         msg_table=msg_table, grp_table=grp_table)
     else:
         if a.class_mode and not a.c2c:
-            cfg = json.load(open(os.path.join(APP, 'config.json'), encoding='utf-8'))
+            with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
+                cfg = json.load(fh)
             cg = [int(x) for x in cfg.get('class_groups', [])]
             if not a.group and cg:
                 a.group = [str(x) for x in cg]
@@ -808,4 +990,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

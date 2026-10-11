@@ -235,6 +235,11 @@ def scan_by_salt(handle, salt_hexes):
 
 def extract_keys(qq, pid=0, output=None, use_dpapi=True):
     """从运行中的 QQ 进程只读扫描提取 SQLCipher 密钥，校验 HMAC 后保存（默认 DPAPI 加密）。"""
+    for _s in (sys.stdout, sys.stderr):          # 控制台可能是 GBK，别让中文输出崩掉
+        try:
+            _s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ntqq_core import protect_key_hex, log
 
@@ -253,6 +258,7 @@ def extract_keys(qq, pid=0, output=None, use_dpapi=True):
         log('ERROR: no NTQQ db found')
         raise SystemExit(1)
 
+    print('@@PROGRESS|{"stage":"key","pct":0,"detail":"扫描进程内存"}', flush=True)
     handle = windll.kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
         log('ERROR: OpenProcess failed, GetLastError=%d' % ctypes.GetLastError())
@@ -284,6 +290,7 @@ def extract_keys(qq, pid=0, output=None, use_dpapi=True):
         with open(output, 'w', encoding='utf-8') as f:
             json.dump(out, f, indent=2, ensure_ascii=False)
         log('written: %s (dpapi=%s)' % (output, out['dpapi_protected']))
+    print('@@PROGRESS|{"stage":"key","pct":100,"detail":"%d 个密钥"}' % len(key_map), flush=True)
 
     log('\n--- salt -> files ---')
     for sh in key_map:

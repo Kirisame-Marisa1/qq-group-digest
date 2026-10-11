@@ -167,7 +167,7 @@ class TestKeyAndDpapi(unittest.TestCase):
         self.assertIsNone(sniff_ext(b'\x00\x01\x02\x03random'))
 
     def test_run_index_migrations_and_rebuild_fts(self):
-        """测试 run_index_migrations 与 rebuild_fts：验证迁移后版本号为 '3' 且各表与 FTS5 可用。"""
+        """测试 run_index_migrations 与 rebuild_fts：验证迁移后版本号为 '4' 且各表、seq 列与 FTS5 可用。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, 'test_index.db')
             con = sqlite3.connect(db_path)
@@ -177,7 +177,10 @@ class TestKeyAndDpapi(unittest.TestCase):
 
                 ver_row = con.execute("SELECT value FROM meta WHERE key='db_schema_version'").fetchone()
                 self.assertIsNotNone(ver_row)
-                self.assertEqual(ver_row[0], '3')
+                self.assertEqual(ver_row[0], '4')
+
+                msg_cols = {r[1] for r in con.execute('PRAGMA table_info(messages)')}
+                self.assertIn('seq', msg_cols)
 
                 # 验证 c2c_messages、c2c_groups、messages_fts 均存在且可读写
                 tables = {
