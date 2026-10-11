@@ -645,18 +645,36 @@ def load_config_cached():
 
 
 # ── 解密编排 ──────────────────────────────────────────────────────────────
+def _detect_userdata_ini():
+    """读取 Windows 下 NTQQ 的全局数据路径配置 UserDataInfo.ini。"""
+    ini = r'C:\Users\Public\Documents\Tencent\QQ\UserDataInfo.ini'
+    if os.name == 'nt' and os.path.isfile(ini):
+        try:
+            with open(ini, encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.strip().startswith('UserDataSavePath='):
+                        val = line.split('=', 1)[1].strip()
+                        if val and os.path.isdir(val):
+                            return val
+        except Exception:
+            pass
+    return ''
+
+
 def qq_data_dir():
     """QQ 数据目录（装 QQ 时可改到别的盘，所以必须可配置）。
 
-    裸文本读 CONFIG，不走 ROOT：ROOT/KEYS 在本模块 import 期就已求值，
-    这里再依赖模块级常量会形成先后顺序问题。默认值保持原样（文档目录）。
+    优先读取 config.json 中的 qq_data_dir 或 account_root（兼容 GUI 配置），
+    若为空则尝试从 C:\\Users\\Public\\Documents\\Tencent\\QQ\\UserDataInfo.ini 自动探测，
+    最后回退至默认的 %USERPROFILE%\\Documents\\Tencent Files。
     """
     try:
         with open(CONFIG, encoding='utf-8') as f:
-            d = (json.load(f).get('qq_data_dir') or '').strip()
+            raw = json.load(f)
+            d = (raw.get('qq_data_dir') or raw.get('account_root') or '').strip()
     except Exception:
         d = ''
-    d = d or os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files')
+    d = d or _detect_userdata_ini() or os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files')
     return os.path.expanduser(d).replace('\\', '/')
 
 

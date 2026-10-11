@@ -19,7 +19,10 @@ from ntqq_core import (
 
 
 def _default_tencent_files_dir():
-    """返回本机默认的 Tencent Files 目录路径。"""
+    """返回本机默认的 Tencent Files 目录路径（支持配置项与 UserDataInfo.ini 自动探测）。"""
+    d = ntqq_core.qq_data_dir()
+    if d and '%USERPROFILE%' not in d:
+        return d
     expanded = os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files')
     if '%USERPROFILE%' not in expanded:
         return expanded
@@ -204,6 +207,16 @@ def init_project(qq=None, root=None, include_c2c=False, base_dir=None, non_inter
             log('[init] 探测到 QQ.exe: %s' % detected_exe)
         else:
             log_debug('[init] 未在常见位置找到 QQ.exe，使用默认路径: %s' % detected_exe)
+
+    # 3.5 探测非默认 QQ 数据目录（UserDataInfo.ini 或 account_root）
+    cur_data_dir = (cfg.get('qq_data_dir') or cfg.get('account_root') or '').strip()
+    if not cur_data_dir:
+        ini_dir = ntqq_core._detect_userdata_ini()
+        if ini_dir:
+            cur_data_dir = ini_dir.replace('\\', '/')
+            log('[init] 探测到自定义 QQ 数据目录: %s' % cur_data_dir)
+    if cur_data_dir:
+        cfg['qq_data_dir'] = cur_data_dir.replace('\\', '/')
 
     # 4. 补充新增配置项（保持向后兼容）
     cfg.setdefault('class_group_names', {})
