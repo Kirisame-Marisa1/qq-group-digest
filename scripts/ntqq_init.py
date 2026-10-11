@@ -210,7 +210,9 @@ def init_project(qq=None, root=None, include_c2c=False, base_dir=None, non_inter
 
     # 3.5 探测非默认 QQ 数据目录（UserDataInfo.ini 或 account_root）
     cur_data_dir = (cfg.get('qq_data_dir') or cfg.get('account_root') or '').strip()
-    if not cur_data_dir:
+    if cur_data_dir:
+        cur_data_dir = ntqq_core._normalize_qq_data_dir(cur_data_dir, str(cfg.get('account') or ''))
+    else:
         ini_dir = ntqq_core._detect_userdata_ini()
         if ini_dir:
             cur_data_dir = ini_dir.replace('\\', '/')

@@ -351,7 +351,7 @@ class QQToolGUI(ctk.CTk):
         if os.path.isdir(doc_tf) and doc_tf not in candidates:
             candidates.append(doc_tf)
         for drv in "CDEFG":
-            for sub in ("Tencent Files", "ntqq\\Tencent Files", "QQ\\Tencent Files"):
+            for sub in ("Tencent Files", "QQNT\\Tencent Files", "ntqq\\Tencent Files", "QQ\\Tencent Files"):
                 p = f"{drv}:\\{sub}"
                 if os.path.isdir(p) and p not in candidates:
                     candidates.append(p)

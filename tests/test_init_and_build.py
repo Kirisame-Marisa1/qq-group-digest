@@ -82,7 +82,26 @@ class TestInitAndBuild(unittest.TestCase):
         finally:
             ntqq_build.PLAIN = old_plain
 
+    def test_account_root_normalization(self):
+        """测试 GUI account_root 带 <QQ号> 子目录时不重复拼接 <QQ号>/<QQ号>。"""
+        import json
+        old_cfg_path = ntqq_core.CONFIG
+        tmp_cfg_path = os.path.join(self.root, 'gui_config.json')
+        ntqq_core.CONFIG = tmp_cfg_path
+        try:
+            with open(tmp_cfg_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'account': '2256817393',
+                    'account_root': 'D:/QQNT/Tencent Files/2256817393',
+                }, f)
+            self.assertEqual(ntqq_core.qq_data_dir(), 'D:/QQNT/Tencent Files')
+            p = ntqq_core.qq_path('2256817393', 'nt_qq', 'nt_db').replace('\\', '/')
+            self.assertEqual(p, 'D:/QQNT/Tencent Files/2256817393/nt_qq/nt_db')
+        finally:
+            ntqq_core.CONFIG = old_cfg_path
+
 
 if __name__ == '__main__':
     unittest.main()
+
 

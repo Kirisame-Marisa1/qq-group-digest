@@ -685,6 +685,26 @@ def _detect_userdata_ini():
     return ''
 
 
+def _normalize_qq_data_dir(d, acc=''):
+    """将用户或 GUI 填入的目录规范化为顶层 Tencent Files 目录（即 <QQ号> 的父目录）。
+
+    GUI 的 account_root 通常填到 <Tencent Files>/<QQ号>，而 CLI 的 qq_data_dir
+    填到 <Tencent Files>。这里统一向上剥离末尾的 nt_db / nt_qq / <QQ号> 层级，
+    避免后续 qq_path(qq, 'nt_qq', 'nt_db') 拼出 .../<QQ号>/<QQ号>/nt_qq/nt_db。
+    """
+    if not d:
+        return ''
+    d = os.path.expanduser(d).replace('\\', '/').rstrip('/')
+    if os.path.basename(d).lower() == 'nt_db':
+        d = os.path.dirname(d)
+    if os.path.basename(d).lower() == 'nt_qq':
+        d = os.path.dirname(d)
+    base = os.path.basename(d)
+    if (acc and acc != 'YOUR_QQ' and base == acc) or os.path.isdir(os.path.join(d, 'nt_qq')):
+        d = os.path.dirname(d)
+    return d
+
+
 def qq_data_dir():
     """QQ 数据目录（装 QQ 时可改到别的盘，所以必须可配置）。
 
@@ -696,15 +716,20 @@ def qq_data_dir():
         with open(CONFIG, encoding='utf-8') as f:
             raw = json.load(f)
             d = (raw.get('qq_data_dir') or raw.get('account_root') or '').strip()
+            acc = str(raw.get('account') or '').strip()
     except Exception:
-        d = ''
+        d, acc = '', ''
+    d = _normalize_qq_data_dir(d, acc)
     d = d or _detect_userdata_ini() or os.path.expandvars(r'%USERPROFILE%\Documents\Tencent Files')
-    return os.path.expanduser(d).replace('\\', '/')
+    return os.path.expanduser(d).replace('\\', '/').rstrip('/')
 
 
 def qq_path(*parts):
-    """拼 <QQ数据目录>/<QQ号>/nt_qq/... 下的路径。"""
-    return os.path.join(qq_data_dir(), *parts)
+    """拼 <QQ数据目录>/<QQ号>/nt_qq/... 下的路径（自动防重复拼接 <QQ号>）。"""
+    base = qq_data_dir()
+    if parts and str(parts[0]) and os.path.basename(base.rstrip('/\\')) == str(parts[0]):
+        parts = parts[1:]
+    return os.path.join(base, *parts)
 
 
 def src_db(cfg, name):
