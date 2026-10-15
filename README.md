@@ -142,6 +142,9 @@ python scripts/ntqq_report.py --c2c --list-groups
 # 班群模式：重点速览在前 + 逐群不限篇幅
 python scripts/ntqq_report.py --class-mode --days 7
 
+# 可溯源结构化报告（4 大标准化板块：热点话题 Top N、重要资源归档、金句高光、活跃度微画像 + 精确 [Ref: #seq] 锚点）
+python scripts/ntqq_report.py --group <群号> --days 7 --structured --out ../output/digest_structured.md
+
 # 图片：本机已落盘的直接用，缺的按 md5 从 CDN 取
 python scripts/ntqq_media.py --groups <群号,群号> --days 30 --workers 4
 
@@ -206,10 +209,14 @@ python tools/purge_filled.py                                                  # 
   **挂起退群判定**，避免批量误报
 
 ### 报告层
-- **零依赖交互式 HTML 可视化简报（`ntqq_html.py`）**：传 `--out <path>.md`（或 `--html <path>.html`）时自动同目录生成纯本地离线单文件 `.html` 可视化简报（GUI 亦支持一键打开），内置三种视图切换：
+- **零依赖交互式 HTML 可视化简报（`ntqq_html.py`）**：传 `--out <path>.md`（或 `--html <path>.html`）时自动同目录生成纯本地离线单文件 `.html` 可视化简报（GUI 亦支持一键打开），内置四种视图切换：
+  - **✨ Claude 风格视窗（Claude Artifact View）**：基于 Anthropic 品牌色彩与排版美学（暖象牙白 `#FAF9F5`、赤陶珊瑚色 `#D97757`、板岩蓝 `#6A9BCC`、灰绿 `#788C5D` 与经典衬线标题），采用双栏 Artifacts 布局。左侧导航轨提供群聊切换、议题直达与群友画像，右侧画布呈现时段话题叙事、对话气泡流、高光金句与完整阅读体验。
   - **🍱 Bento 交互看板**：顶部 5 宫格指标卡、📌 重点雷达（`@全体` / 通知 / 班群 / 转发）、多群标签筛选与实时搜索、24 小时活跃柱状图、**时段话题自动聚类卡片 + 可展开原生 QQ 聊天气泡**、高光金句卡片、以及**群友画像榜**（自动打标 `👑 榜一担当` / `🌙 深夜夜猫子` / `📢 情报转发员` / `📝 长文输出王` / `💬 接梗互动王` / `🎯 话题焦点`）
   - **📰 纸上日报视图**：双栏报纸排版风格，适合晨间速读与打印导出 PDF
   - **📄 Markdown 原文视图**：支持一键复制完整 Markdown 原文
+- **Claude 美学 GUI 客户端与内置阅读视窗（`gui_app.py`）**：
+  - 界面全面重构为 Anthropic 暖色极简设计体系（暖象牙白底色、赤陶珊瑚色核心操作按钮、圆角卡片与精巧边框）
+  - 新增 **`📖 Claude 风格阅读视窗`**：桌面端原生内置独立阅读窗口（`ClaudeReaderWindow`），左侧群列表导航 + 实时搜索，右侧沉浸速读画布，支持一键在浏览器中全屏查看与一键复制 Markdown。
 - 逐日 / 逐时分布、参与人数、活跃时长、消息类型构成
 - 关键词提取（n-gram，无需分词库）、发言榜、被 @ 榜
 - 与上一个等长窗口的趋势对比

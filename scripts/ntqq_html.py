@@ -567,6 +567,22 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --paper-card: #1c1b18;
   --paper-ink: #e7e5e4;
   --paper-rule: #44403c;
+  --claude-bg: #141413;
+  --claude-surface: #1e1d1b;
+  --claude-surface-warm: #252421;
+  --claude-border: #33312e;
+  --claude-border-subtle: #292724;
+  --claude-text: #ece8e1;
+  --claude-text-sub: #a39e93;
+  --claude-text-muted: #78736b;
+  --claude-terracotta: #e28567;
+  --claude-terracotta-hover: #f0987d;
+  --claude-terracotta-soft: rgba(226, 133, 103, 0.16);
+  --claude-blue: #88b4de;
+  --claude-blue-soft: rgba(136, 180, 222, 0.16);
+  --claude-green: #8fa671;
+  --claude-green-soft: rgba(143, 166, 113, 0.16);
+  --claude-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45);
 }
 :root[data-theme="light"] {
   --bg: #f1f5f9;
@@ -598,6 +614,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --paper-card: #fdfbf7;
   --paper-ink: #1c1917;
   --paper-rule: #292524;
+  --claude-bg: #faf9f5;
+  --claude-surface: #ffffff;
+  --claude-surface-warm: #f7f5ee;
+  --claude-border: #e8e6dc;
+  --claude-border-subtle: #f0ede5;
+  --claude-text: #141413;
+  --claude-text-sub: #6e665e;
+  --claude-text-muted: #87867f;
+  --claude-terracotta: #d97757;
+  --claude-terracotta-hover: #c96442;
+  --claude-terracotta-soft: rgba(217, 119, 87, 0.12);
+  --claude-blue: #6a9bcc;
+  --claude-blue-soft: rgba(106, 155, 204, 0.12);
+  --claude-green: #788c5d;
+  --claude-green-soft: rgba(120, 140, 93, 0.12);
+  --claude-shadow: 0 4px 20px -2px rgba(20, 20, 19, 0.05), 0 2px 6px -1px rgba(20, 20, 19, 0.03);
+}
+:root {
+  --claude-serif: "Lora", "Georgia", "Songti SC", "STSong", "Source Han Serif CN", "Noto Serif CJK SC", "SimSun", serif;
+  --claude-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --claude-mono: "SF Mono", "Fira Code", "Consolas", monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1224,11 +1261,385 @@ mark.hl {
   border-radius: 3px;
 }
 
+/* Claude / Anthropic Reading Experience */
+.claude-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.claude-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 76px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-right: 4px;
+}
+.claude-sidebar::-webkit-scrollbar {
+  width: 5px;
+}
+.claude-sidebar::-webkit-scrollbar-thumb {
+  background: var(--claude-border);
+  border-radius: 999px;
+}
+.claude-sidebar-card {
+  background: var(--claude-surface);
+  border: 1px solid var(--claude-border);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: var(--claude-shadow);
+}
+.claude-search-box {
+  position: relative;
+  margin-bottom: 8px;
+}
+.claude-search-input {
+  width: 100%;
+  padding: 8px 12px 8px 32px;
+  background: var(--claude-surface-warm);
+  border: 1px solid var(--claude-border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--claude-text);
+  outline: none;
+  transition: all 0.15s;
+}
+.claude-search-input:focus {
+  border-color: var(--claude-terracotta);
+  box-shadow: 0 0 0 3px var(--claude-terracotta-soft);
+  background: var(--claude-surface);
+}
+.claude-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--claude-text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+.claude-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 48vh;
+  overflow-y: auto;
+}
+.claude-group-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--claude-text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  transition: all 0.15s;
+  width: 100%;
+  text-decoration: none;
+}
+.claude-group-item:hover {
+  background: var(--claude-surface-warm);
+  border-color: var(--claude-border-subtle);
+}
+.claude-group-item.active {
+  background: var(--claude-surface-warm);
+  border-color: var(--claude-border);
+  border-left: 3.5px solid var(--claude-terracotta);
+  font-weight: 600;
+}
+.claude-group-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--claude-surface);
+  border: 1px solid var(--claude-border);
+  color: var(--claude-text-sub);
+  font-family: var(--claude-mono);
+  flex-shrink: 0;
+}
+.claude-group-item.active .claude-group-badge {
+  background: var(--claude-terracotta-soft);
+  border-color: transparent;
+  color: var(--claude-terracotta);
+  font-weight: 700;
+}
+
+.claude-main {
+  flex: 1;
+  min-width: 0;
+}
+.claude-artifact-card {
+  background: var(--claude-surface);
+  border: 1px solid var(--claude-border);
+  border-radius: 14px;
+  box-shadow: var(--claude-shadow);
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+.claude-artifact-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--claude-border);
+  background: var(--claude-surface-warm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.claude-artifact-title-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.claude-sparkle {
+  color: var(--claude-terracotta);
+  font-size: 18px;
+  line-height: 1;
+}
+.claude-artifact-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--claude-terracotta);
+  background: var(--claude-terracotta-soft);
+  border: 1px solid var(--claude-terracotta);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.claude-artifact-title {
+  font-family: var(--claude-serif);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--claude-text);
+  letter-spacing: -0.01em;
+}
+.claude-artifact-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.claude-tool-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 7px;
+  border: 1px solid var(--claude-border);
+  background: var(--claude-surface);
+  color: var(--claude-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.claude-tool-btn:hover {
+  border-color: var(--claude-terracotta);
+  color: var(--claude-terracotta);
+}
+
+.claude-article-body {
+  padding: 28px 36px;
+}
+@media (max-width: 900px) {
+  .claude-layout { flex-direction: column; }
+  .claude-sidebar { width: 100%; position: static; max-height: none; }
+  .claude-article-body { padding: 18px; }
+}
+
+.claude-lead-note {
+  border-left: 3.5px solid var(--claude-terracotta);
+  background: var(--claude-surface-warm);
+  border-radius: 0 10px 10px 0;
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  font-family: var(--claude-serif);
+  font-size: 15px;
+  color: var(--claude-text);
+  line-height: 1.7;
+}
+
+.claude-chapter-title {
+  font-family: var(--claude-serif);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--claude-text);
+  margin: 28px 0 14px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--claude-border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.claude-chapter-diamond {
+  color: var(--claude-terracotta);
+  font-size: 14px;
+}
+
+.claude-thread-card {
+  border: 1px solid var(--claude-border);
+  border-radius: 12px;
+  background: var(--claude-surface);
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+.claude-thread-header {
+  padding: 12px 18px;
+  background: var(--claude-surface-warm);
+  border-bottom: 1px solid var(--claude-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.claude-thread-title {
+  font-family: var(--claude-serif);
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--claude-text);
+}
+.claude-thread-meta {
+  font-size: 12px;
+  color: var(--claude-text-sub);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.claude-thread-body {
+  padding: 16px 18px;
+}
+.claude-thread-takeaways {
+  list-style: none;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.claude-takeaway-item {
+  font-size: 14px;
+  color: var(--claude-text);
+  line-height: 1.6;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.claude-takeaway-dot {
+  color: var(--claude-terracotta);
+  font-weight: bold;
+  line-height: 1.6;
+}
+
+.claude-turn {
+  display: flex;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: var(--claude-surface-warm);
+  border: 1px solid var(--claude-border-subtle);
+  margin-bottom: 8px;
+}
+.claude-turn.is-notice {
+  background: var(--claude-terracotta-soft);
+  border-color: var(--claude-terracotta);
+}
+.claude-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.claude-turn-content {
+  flex: 1;
+  min-width: 0;
+}
+.claude-turn-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--claude-text-sub);
+}
+.claude-turn-sender {
+  font-weight: 600;
+  color: var(--claude-text);
+}
+.claude-turn-text {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--claude-text);
+  word-break: break-word;
+}
+
+.claude-blockquote {
+  margin: 14px 0;
+  padding: 12px 16px;
+  border-left: 3px solid var(--claude-terracotta);
+  background: var(--claude-surface-warm);
+  border-radius: 0 8px 8px 0;
+  font-family: var(--claude-serif);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--claude-text);
+}
+.claude-blockquote-sender {
+  margin-top: 6px;
+  font-family: var(--claude-sans);
+  font-size: 12px;
+  color: var(--claude-text-sub);
+}
+
+.claude-persona-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.claude-persona-card {
+  padding: 10px 14px;
+  border: 1px solid var(--claude-border);
+  border-radius: 8px;
+  background: var(--claude-surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.claude-persona-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--claude-text);
+}
+.claude-persona-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
 @media print {
-  .topbar, .filter-bar, .no-print { display: none !important; }
+  .topbar, .filter-bar, .no-print, .claude-sidebar { display: none !important; }
   body { background: #fff; color: #000; padding: 0; }
   .container { max-width: 100%; padding: 0; }
-  .section-card, .kpi-card, .thread-card { box-shadow: none; border-color: #ccc; break-inside: avoid; }
+  .section-card, .kpi-card, .thread-card, .claude-artifact-card { box-shadow: none; border-color: #ccc; break-inside: avoid; }
   .bubble-drawer { display: flex !important; max-height: none !important; }
 }
 </style>
@@ -1238,7 +1649,7 @@ mark.hl {
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <div class="brand-logo">Q</div>
+      <div class="brand-logo" style="background:linear-gradient(135deg, #d97757, #6a9bcc)">✦</div>
       <div>
         <div class="brand-title" id="hdr-title">QQ 群聊可视化简报</div>
         <div class="brand-sub" id="hdr-sub"></div>
@@ -1246,7 +1657,8 @@ mark.hl {
     </div>
     <div class="toolbar">
       <div class="mode-switch" id="view-switcher">
-        <button class="mode-btn active" data-view="bento" onclick="switchView('bento')">🍱 Bento 交互看板</button>
+        <button class="mode-btn active" data-view="claude" onclick="switchView('claude')">✨ Claude 视窗</button>
+        <button class="mode-btn" data-view="bento" onclick="switchView('bento')">🍱 Bento 交互看板</button>
         <button class="mode-btn" data-view="paper" onclick="switchView('paper')">📰 纸上日报视图</button>
         <button class="mode-btn" data-view="markdown" onclick="switchView('markdown')">📄 Markdown 原文</button>
       </div>
@@ -1266,14 +1678,23 @@ mark.hl {
   const rawJson = document.getElementById('digest-data').textContent;
   const DATA = JSON.parse(rawJson);
 
+  const urlParamView = (new URLSearchParams(window.location.search).get('view') || window.location.hash.replace('#', ''));
+  let defaultView = 'claude';
+  if (['claude', 'bento', 'paper', 'markdown'].includes(urlParamView)) {
+    defaultView = urlParamView;
+  }
+
   let state = {
-    view: 'bento',          // 'bento' | 'paper' | 'markdown'
-    activeGroup: '__ALL__', // '__ALL__' or group.code
-    groupSubTab: 'threads', // 'threads' | 'stream'
-    radarFilter: 'ALL',     // 'ALL' | 'CLASS' | 'AT' | 'FWD'
+    view: defaultView,          // 'claude' | 'bento' | 'paper' | 'markdown'
+    activeGroup: '__ALL__',     // '__ALL__' or group.code
+    claudeActiveGroup: '__ALL__', // '__ALL__' or group.code
+    groupSubTab: 'threads',     // 'threads' | 'stream'
+    radarFilter: 'ALL',         // 'ALL' | 'CLASS' | 'AT' | 'FWD'
     searchQuery: '',
+    claudeSearchQuery: '',
     speakerFilter: '',
     expandedThreads: {},
+    claudeExpandedThreads: {},
   };
 
   const AVATAR_COLORS = [
@@ -2025,6 +2446,481 @@ mark.hl {
     return html;
   }
 
+  window.onClaudeSearch = function(val) {
+    state.claudeSearchQuery = val || '';
+    renderClaudeSidebar();
+    renderClaudeContent();
+  };
+
+  window.selectClaudeGroup = function(code) {
+    state.claudeActiveGroup = code;
+    renderClaudeSidebar();
+    renderClaudeContent();
+    const mainSlot = document.getElementById('claude-main-slot');
+    if (mainSlot) mainSlot.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  window.toggleClaudeThread = function(tid) {
+    state.claudeExpandedThreads[tid] = !state.claudeExpandedThreads[tid];
+    const drawer = document.getElementById('claude-drawer-' + tid);
+    const btn = document.getElementById('claude-btn-' + tid);
+    if (drawer) {
+      const open = !!state.claudeExpandedThreads[tid];
+      drawer.style.display = open ? 'flex' : 'none';
+      if (btn) {
+        const cnt = btn.getAttribute('data-cnt') || '';
+        btn.innerHTML = open ? '🔼 收起全部消息' : ('💬 展开全部消息 (' + cnt + ' 条)');
+      }
+    }
+  };
+
+  window.copyClaudeGroupMarkdown = function(code) {
+    let textToCopy = '';
+    if (code === '__ALL__') {
+      textToCopy = DATA.markdown || '';
+    } else {
+      const g = (DATA.groups || []).find(x => x.code === code);
+      if (g) {
+        const lines = (DATA.markdown || '').split('\n');
+        let inSection = false;
+        let gLines = [];
+        for (let line of lines) {
+          if (line.startsWith('## ') || line.startsWith('### ')) {
+            if (line.includes(g.name) || line.includes(String(g.code))) {
+              inSection = true;
+              gLines.push(line);
+              continue;
+            } else if (inSection && line.startsWith('## ')) {
+              break;
+            }
+          }
+          if (inSection) gLines.push(line);
+        }
+        textToCopy = gLines.length ? gLines.join('\n') : (DATA.markdown || '');
+      } else {
+        textToCopy = DATA.markdown || '';
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        const b = document.getElementById('claude-copy-btn');
+        if (b) {
+          const old = b.innerHTML;
+          b.innerHTML = '✅ 已复制本群简报';
+          setTimeout(() => { b.innerHTML = old; }, 2000);
+        }
+      });
+    }
+  };
+
+  function renderClaudeTurn(b, q) {
+    const color = hashColor(b.sender);
+    const ch = avatarChar(b.sender);
+    const kindBadge = (b.kind && b.kind !== 'text')
+      ? '<span class="pill pill-slate">[' + esc(b.kind) + ']</span>'
+      : '';
+    return '<div class="claude-turn' + (b.is_notice ? ' is-notice' : '') + '">' +
+      '<div class="claude-avatar" style="background:' + color + '">' + esc(ch) + '</div>' +
+      '<div class="claude-turn-content">' +
+        '<div class="claude-turn-header">' +
+          '<span class="claude-turn-sender">' + highlightText(b.sender, q) + '</span>' +
+          '<span>' + esc(b.time) + '</span>' +
+          kindBadge +
+          (b.is_notice ? '<span class="pill pill-amber" style="background:var(--claude-terracotta-soft);color:var(--claude-terracotta);border-color:var(--claude-terracotta)">📢 重点关注</span>' : '') +
+        '</div>' +
+        '<div class="claude-turn-text">' + highlightText(b.text, q) + '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderClaudeView() {
+    return '<div class="claude-layout">' +
+      '<aside class="claude-sidebar" id="claude-sidebar-slot"></aside>' +
+      '<main class="claude-main" id="claude-main-slot"></main>' +
+    '</div>';
+  }
+
+  function renderClaudeSidebar() {
+    const slot = document.getElementById('claude-sidebar-slot');
+    if (!slot) return;
+    const groups = DATA.groups || [];
+    const q = (state.claudeSearchQuery || '').trim().toLowerCase();
+
+    let html = '<div class="claude-sidebar-card">' +
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">' +
+        '<div class="claude-sparkle" style="font-size:22px">✦</div>' +
+        '<div>' +
+          '<div style="font-family:var(--claude-serif);font-weight:700;font-size:15px;color:var(--claude-text)">Claude 阅览室</div>' +
+          '<div style="font-size:11.5px;color:var(--claude-text-sub)">Anthropic 美学双轨阅览</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="claude-search-box">' +
+        '<span class="claude-search-icon">🔍</span>' +
+        '<input type="search" class="claude-search-input" placeholder="过滤群聊、话题、金句..." value="' + esc(state.claudeSearchQuery) + '" oninput="onClaudeSearch(this.value)">' +
+      '</div>';
+
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--claude-text-sub);margin:14px 0 8px 4px">群组列表 (GROUPS)</div>' +
+      '<div class="claude-group-list">' +
+        '<button class="claude-group-item' + (state.claudeActiveGroup === '__ALL__' ? ' active' : '') + '" onclick="selectClaudeGroup(\'__ALL__\')">' +
+          '<span style="display:flex;align-items:center;gap:8px">' +
+            '<span>🌐</span><span>全部群速览</span>' +
+          '</span>' +
+          '<span class="claude-group-badge">' + groups.length + ' 群</span>' +
+        '</button>';
+
+    groups.forEach(g => {
+      if (q) {
+        const matchName = (g.name || '').toLowerCase().includes(q);
+        const matchKws = (g.keywords || []).some(k => k.word.toLowerCase().includes(q));
+        const matchThreads = (g.threads || []).some(t => (t.title || '').toLowerCase().includes(q));
+        const matchQuotes = (g.quotes || []).some(quo => (quo.text || '').toLowerCase().includes(q));
+        if (!matchName && !matchKws && !matchThreads && !matchQuotes) return;
+      }
+      const act = state.claudeActiveGroup === g.code ? ' active' : '';
+      html += '<button class="claude-group-item' + act + '" onclick="selectClaudeGroup(\'' + esc(g.code) + '\')">' +
+        '<span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">' +
+          '<span>' + (g.is_class ? '🎓' : '💬') + '</span>' +
+          '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(g.name) + '</span>' +
+        '</span>' +
+        '<span class="claude-group-badge">' + g.nconv + '</span>' +
+      '</button>';
+    });
+    html += '</div></div>';
+
+    const curGroup = groups.find(g => g.code === state.claudeActiveGroup);
+    if (curGroup && (curGroup.threads || []).length) {
+      html += '<div class="claude-sidebar-card">' +
+        '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--claude-text-sub);margin-bottom:10px">本群核心议题 (TOPICS)</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px">';
+      curGroup.threads.forEach(t => {
+        html += '<a href="#claude-topic-' + curGroup.code + '-' + t.idx + '" class="claude-group-item" style="padding:6px 10px;font-size:12.5px;line-height:1.4">' +
+          '<span style="color:var(--claude-terracotta);margin-right:6px">◈</span>' +
+          '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(t.title) + '</span>' +
+        '</a>';
+      });
+      html += '</div></div>';
+    }
+
+    const speakers = curGroup ? (curGroup.speakers || []).slice(0, 6) : ((DATA.kpis || {}).global_speakers || []).slice(0, 6);
+    if (speakers.length) {
+      html += '<div class="claude-sidebar-card">' +
+        '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--claude-text-sub);margin-bottom:10px">' + (curGroup ? '本群核心群友' : '全群核心群友') + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+      speakers.forEach(s => {
+        html += '<span class="claude-persona-tag" style="background:var(--claude-surface-warm);border:1px solid var(--claude-border);color:var(--claude-text);padding:3px 8px;font-size:11.5px">' +
+          esc(s.name) + ' <strong style="color:var(--claude-terracotta)">' + s.count + '</strong>' +
+        '</span>';
+      });
+      html += '</div></div>';
+    }
+
+    slot.innerHTML = html;
+  }
+
+  function renderClaudeContent() {
+    const slot = document.getElementById('claude-main-slot');
+    if (!slot) return;
+    const m = DATA.meta || {};
+    const k = DATA.kpis || {};
+    const groups = DATA.groups || [];
+    const focus = DATA.focus_items || [];
+    const q = (state.claudeSearchQuery || '').trim();
+
+    if (DATA.mode !== 'digest') {
+      const ex = DATA.extra || {};
+      let html = '<div class="claude-artifact-card">' +
+        '<div class="claude-artifact-header">' +
+          '<div class="claude-artifact-title-box">' +
+            '<span class="claude-sparkle">✦</span>' +
+            '<span class="claude-artifact-badge">Artifact · Query Report</span>' +
+            '<span class="claude-artifact-title">' + esc(m.title || '专项查询提炼简报') + '</span>' +
+          '</div>' +
+          '<div class="claude-artifact-tools">' +
+            '<button class="claude-tool-btn" id="claude-copy-btn" onclick="copyMarkdown()">📋 复制 Markdown</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="claude-article-body">' +
+          '<div class="claude-lead-note">' +
+            '💬 本专项分析由私有分析引擎实时提炼。窗口范围：<strong>' + esc(m.window_str || '-') + '</strong> ｜ 数据截止：<strong>' + esc(m.cutoff_str || '-') + '</strong>' +
+          '</div>';
+
+      if (ex.summary_cards && ex.summary_cards.length) {
+        html += '<div class="claude-persona-grid" style="margin-bottom:20px">';
+        ex.summary_cards.forEach(c => {
+          html += '<div class="claude-persona-card" style="padding:12px 16px">' +
+            '<div>' +
+              '<div style="font-size:11.5px;color:var(--claude-text-sub)">' + esc(c.label) + '</div>' +
+              '<div style="font-size:18px;font-weight:700;color:var(--claude-terracotta);margin-top:2px">' + esc(c.value) + '</div>' +
+            '</div>' +
+            (c.sub ? '<div style="font-size:11px;color:var(--claude-text-muted)">' + esc(c.sub) + '</div>' : '') +
+          '</div>';
+        });
+        html += '</div>';
+      }
+
+      if (ex.items && ex.items.length) {
+        html += '<div style="margin-bottom:20px">' +
+          '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 命中对话记录 (' + ex.items.length + ' 条)</div>' +
+          '<div style="display:flex;flex-direction:column;gap:8px">';
+        ex.items.forEach(it => {
+          html += renderClaudeTurn(it, q);
+        });
+        html += '</div></div>';
+      }
+
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> Markdown 原文</div>' +
+        '<div class="md-box" style="background:var(--claude-surface-warm);border-color:var(--claude-border)">' + esc(DATA.markdown || '') + '</div>' +
+      '</div></div>';
+      slot.innerHTML = html;
+      return;
+    }
+
+    if (state.claudeActiveGroup === '__ALL__') {
+      let html = '<div class="claude-artifact-card">' +
+        '<div class="claude-artifact-header">' +
+          '<div class="claude-artifact-title-box">' +
+            '<span class="claude-sparkle">✦</span>' +
+            '<span class="claude-artifact-badge">Artifact · Executive Overview</span>' +
+            '<span class="claude-artifact-title">QQ 群聊每日观察 · 总览</span>' +
+            '<span class="pill pill-slate" style="font-family:var(--claude-mono)">约 ' + (k.total_conv || 0) + ' 条有效对话 · ' + groups.length + ' 个活跃群</span>' +
+          '</div>' +
+          '<div class="claude-artifact-tools">' +
+            '<button class="claude-tool-btn" id="claude-copy-btn" onclick="copyClaudeGroupMarkdown(\'__ALL__\')">📋 复制全部 Markdown</button>' +
+            '<button class="claude-tool-btn" onclick="window.print()">🖨️ 打印简报</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="claude-article-body">' +
+          '<div class="claude-lead-note">' +
+            '💬 本期群聊日报由本地私有引擎基于本地 QQ 缓存实时提炼，覆盖 <strong>' + groups.length + '</strong> 个活跃群组与 <strong>' + (k.total_conv || 0) + '</strong> 条有效对话。' +
+            '所有数据均在本地安全计算，不上传任何隐私。以下为全群核心议题与重要动态。点击左侧群聊或下方卡片可直接进入逐群深度阅读。' +
+          '</div>';
+
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:12px;margin-bottom:24px">' +
+        '<div class="claude-persona-card" style="padding:14px 18px;flex-direction:column;align-items:flex-start">' +
+          '<div style="font-size:11.5px;color:var(--claude-text-sub);text-transform:uppercase;letter-spacing:0.04em">📊 消息吞吐总量</div>' +
+          '<div style="font-size:22px;font-weight:700;color:var(--claude-text);margin-top:4px">' + (k.total_msgs || 0) + ' 条</div>' +
+          '<div style="font-size:11px;color:var(--claude-text-muted);margin-top:2px">' + (k.delta_msgs > 0 ? ('较前增量 +' + k.delta_msgs + ' 条') : '全量覆盖') + '</div>' +
+        '</div>' +
+        '<div class="claude-persona-card" style="padding:14px 18px;flex-direction:column;align-items:flex-start">' +
+          '<div style="font-size:11.5px;color:var(--claude-text-sub);text-transform:uppercase;letter-spacing:0.04em">💬 有效对话数</div>' +
+          '<div style="font-size:22px;font-weight:700;color:var(--claude-terracotta);margin-top:4px">' + (k.total_conv || 0) + ' 条</div>' +
+          '<div style="font-size:11px;color:var(--claude-text-muted);margin-top:2px">已自动剔除纯表情/系统消息</div>' +
+        '</div>' +
+        '<div class="claude-persona-card" style="padding:14px 18px;flex-direction:column;align-items:flex-start">' +
+          '<div style="font-size:11.5px;color:var(--claude-text-sub);text-transform:uppercase;letter-spacing:0.04em">👥 活跃交流群组</div>' +
+          '<div style="font-size:22px;font-weight:700;color:var(--claude-blue);margin-top:4px">' + (k.group_count || 0) + ' 个群</div>' +
+          '<div style="font-size:11px;color:var(--claude-text-muted);margin-top:2px">涵盖 ' + (k.people_count || 0) + ' 位群友参与</div>' +
+        '</div>' +
+        '<div class="claude-persona-card" style="padding:14px 18px;flex-direction:column;align-items:flex-start">' +
+          '<div style="font-size:11.5px;color:var(--claude-text-sub);text-transform:uppercase;letter-spacing:0.04em">⏰ 黄金讨论档</div>' +
+          '<div style="font-size:22px;font-weight:700;color:var(--claude-green);margin-top:4px">' + esc(k.peak_hour_str || '-') + '</div>' +
+          '<div style="font-size:11px;color:var(--claude-text-muted);margin-top:2px">单小时峰值 ' + (k.peak_hour_count || 0) + ' 条</div>' +
+        '</div>' +
+      '</div>';
+
+      if (focus.length) {
+        html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 头版雷达 · 重点通知与高优发言 (' + focus.length + ' 条)</div>' +
+          '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:28px">';
+        focus.slice(0, 8).forEach(it => {
+          html += '<div class="claude-thread-card" style="cursor:pointer" onclick="selectClaudeGroup(\'' + esc(it.group_code) + '\')">' +
+            '<div class="claude-thread-header">' +
+              '<span style="font-weight:600;font-size:13px;color:var(--claude-terracotta)">[' + esc(it.group_name) + ']</span>' +
+              '<span style="font-size:11.5px;color:var(--claude-text-sub)">' + esc(it.sender) + ' · ' + esc(it.time) + '</span>' +
+            '</div>' +
+            '<div class="claude-thread-body" style="font-size:13.5px;line-height:1.6">' +
+              esc(it.text) +
+            '</div>' +
+          '</div>';
+        });
+        html += '</div>';
+      }
+
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 各群纵览与快速直达</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:28px">';
+      groups.forEach((g) => {
+        const topKws = (g.keywords || []).slice(0, 5).map(kw => '<span class="claude-persona-tag" style="background:var(--claude-surface-warm);border:1px solid var(--claude-border);color:var(--claude-text);padding:2px 6px;font-size:11px">' + esc(kw.word) + '</span>').join(' ');
+        const firstQuote = (g.quotes || [])[0];
+        html += '<div class="claude-thread-card" style="display:flex;flex-direction:column;justify-content:space-between">' +
+          '<div>' +
+            '<div class="claude-thread-header">' +
+              '<div style="font-family:var(--claude-serif);font-size:15px;font-weight:700;color:var(--claude-text)">' +
+                (g.is_class ? '🎓 ' : '') + esc(g.name) +
+              '</div>' +
+              '<span class="claude-group-badge">' + g.nconv + ' 条对话</span>' +
+            '</div>' +
+            '<div class="claude-thread-body">' +
+              '<div style="font-size:12px;color:var(--claude-text-sub);margin-bottom:8px">' +
+                '参与群友 ' + g.people_count + ' 人 ｜ 活跃峰值 ' + (g.peak_hour < 10 ? '0' + g.peak_hour : g.peak_hour) + ':00 ｜ 覆盖 ' + g.span_hours + ' 小时' +
+              '</div>' +
+              (topKws ? '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px">' + topKws + '</div>' : '') +
+              (firstQuote ? '<div class="claude-blockquote" style="margin:8px 0;font-size:13px;padding:8px 12px">“' + esc(firstQuote.text) + '”<div class="claude-blockquote-sender">—— ' + esc(firstQuote.sender) + '</div></div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div style="padding:10px 18px;background:var(--claude-surface-warm);border-top:1px solid var(--claude-border-subtle);display:flex;justify-content:flex-end">' +
+            '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(g.code) + '\')">进入深度阅读 →</button>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 全天讨论活跃度时序分布 (24-Hour Pulse)</div>' +
+        '<div style="background:var(--claude-surface);border:1px solid var(--claude-border);border-radius:12px;padding:18px;margin-bottom:28px">' +
+          render24hChart(k.hours_24, k.peak_hour) +
+          '<div style="font-size:12px;color:var(--claude-text-sub);margin-top:12px;text-align:right">橙色高亮柱标示为今日讨论高峰时段 (' + esc(k.peak_hour_str || '') + ')</div>' +
+        '</div>';
+
+      if ((k.global_speakers || []).length) {
+        html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 活跃群友画像名人堂 (Top Contributors)</div>' +
+          '<div class="claude-persona-grid" style="margin-bottom:28px">';
+        (k.global_speakers || []).slice(0, 12).forEach(spk => {
+          html += '<div class="claude-persona-card">' +
+            '<div>' +
+              '<div class="claude-persona-name">' + esc(spk.name) + '</div>' +
+              '<div style="font-size:11.5px;color:var(--claude-text-muted)">发言 ' + spk.count + ' 条 ｜ 占比 ' + spk.pct + '%</div>' +
+            '</div>' +
+            '<span class="claude-persona-tag ' + pillClass(spk.color) + '">' + esc(spk.persona) + '</span>' +
+          '</div>';
+        });
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+      slot.innerHTML = html;
+      return;
+    }
+
+    const curGroup = groups.find(g => g.code === state.claudeActiveGroup) || groups[0];
+    if (!curGroup) {
+      slot.innerHTML = '<div class="claude-lead-note">未找到指定群组记录。</div>';
+      return;
+    }
+
+    const curIdx = groups.indexOf(curGroup);
+    const prevGroup = curIdx > 0 ? groups[curIdx - 1] : null;
+    const nextGroup = curIdx < groups.length - 1 ? groups[curIdx + 1] : null;
+
+    let html = '<div class="claude-artifact-card">' +
+      '<div class="claude-artifact-header">' +
+        '<div class="claude-artifact-title-box">' +
+          '<span class="claude-sparkle">✦</span>' +
+          '<span class="claude-artifact-badge">Artifact · Deep Read</span>' +
+          '<span class="claude-artifact-title">' + (curGroup.is_class ? '🎓 ' : '') + esc(curGroup.name) + '</span>' +
+          '<span class="pill pill-slate" style="font-family:var(--claude-mono)">有效对话 ' + curGroup.nconv + ' 条 ｜ 参与 ' + curGroup.people_count + ' 人</span>' +
+        '</div>' +
+        '<div class="claude-artifact-tools">' +
+          '<button class="claude-tool-btn" id="claude-copy-btn" onclick="copyClaudeGroupMarkdown(\'' + esc(curGroup.code) + '\')">📋 复制本群 Markdown</button>' +
+          '<button class="claude-tool-btn" onclick="switchView(\'bento\'); selectGroup(\'' + esc(curGroup.code) + '\')">🍱 Bento 看板</button>' +
+          '<button class="claude-tool-btn" onclick="window.print()">🖨️ 打印</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="claude-article-body">' +
+        '<div class="claude-lead-note">' +
+          '💬 本群在统计窗口内共产生有效对话 <strong>' + curGroup.nconv + '</strong> 条（总消息 ' + curGroup.ntot + ' 条），' +
+          '共有 <strong>' + curGroup.people_count + '</strong> 位群友发言。讨论黄金峰值出现在 <strong>' + (curGroup.peak_hour < 10 ? '0' + curGroup.peak_hour : curGroup.peak_hour) + ':00</strong> 前后。' +
+          '首末发言跨度约 <strong>' + curGroup.span_hours + '</strong> 小时。' +
+        '</div>';
+
+    const groupNotices = (curGroup.quotes || []).filter(quo => quo.is_notice);
+    if (groupNotices.length) {
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 群内重点通知与通告 (' + groupNotices.length + ' 条)</div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px">';
+      groupNotices.forEach(n => {
+        html += '<div class="claude-turn is-notice">' +
+          '<div class="claude-avatar" style="background:var(--claude-terracotta)">📢</div>' +
+          '<div class="claude-turn-content">' +
+            '<div class="claude-turn-header">' +
+              '<span class="claude-turn-sender">' + highlightText(n.sender, q) + '</span>' +
+              '<span>' + esc(n.time) + '</span>' +
+              '<span class="pill pill-amber" style="background:var(--claude-terracotta-soft);color:var(--claude-terracotta);border-color:var(--claude-terracotta)">📢 重点通告</span>' +
+            '</div>' +
+            '<div class="claude-turn-text">' + highlightText(n.text, q) + '</div>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+    }
+
+    const threads = curGroup.threads || [];
+    if (threads.length) {
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 话题脉络深度拆解 (' + threads.length + ' 个讨论阶段)</div>';
+      threads.forEach(t => {
+        const tid = curGroup.code + '-' + t.idx;
+        const isOpen = !!state.claudeExpandedThreads[tid];
+        html += '<div class="claude-thread-card" id="claude-topic-' + tid + '">' +
+          '<div class="claude-thread-header">' +
+            '<div class="claude-thread-title">◈ [' + esc(t.start_time) + ' ~ ' + esc(t.end_time) + '] ' + esc(t.title) + '</div>' +
+            '<div class="claude-thread-meta">' +
+              '<span>💬 ' + t.msg_count + ' 条讨论</span>' +
+              '<span>👥 ' + t.people_count + ' 人参与</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="claude-thread-body">';
+
+        if (t.highlights && t.highlights.length) {
+          html += '<div style="margin-bottom:12px;font-size:12.5px;font-weight:700;color:var(--claude-text-sub);letter-spacing:0.04em">核心观点与发言摘要:</div>' +
+            '<div style="display:flex;flex-direction:column;gap:8px">';
+          t.highlights.forEach(h => {
+            html += renderClaudeTurn(h, q);
+          });
+          html += '</div>';
+        }
+
+        if (t.bubbles && t.bubbles.length) {
+          html += '<div style="margin-top:14px;display:flex;justify-content:flex-end">' +
+            '<button class="claude-tool-btn" id="claude-btn-' + tid + '" data-cnt="' + t.bubbles.length + '" onclick="toggleClaudeThread(\'' + tid + '\')">' +
+              (isOpen ? '🔼 收起全部消息' : ('💬 展开全部消息 (' + t.bubbles.length + ' 条)')) +
+            '</button>' +
+          '</div>' +
+          '<div id="claude-drawer-' + tid + '" style="display:' + (isOpen ? 'flex' : 'none') + ';flex-direction:column;gap:8px;margin-top:12px;border-top:1px solid var(--claude-border-subtle);padding-top:12px">';
+          t.bubbles.forEach(b => {
+            html += renderClaudeTurn(b, q);
+          });
+          html += '</div>';
+        }
+
+        html += '</div></div>';
+      });
+    }
+
+    const quotes = curGroup.quotes || [];
+    if (quotes.length) {
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 群聊高光金句辑录</div>' +
+        '<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px">';
+      quotes.forEach(quo => {
+        html += '<div class="claude-blockquote">' +
+          '“' + highlightText(quo.text, q) + '”' +
+          '<div class="claude-blockquote-sender">—— ' + esc(quo.sender) + ' · ' + esc(quo.time) + '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+    }
+
+    const speakers = curGroup.speakers || [];
+    if (speakers.length) {
+      html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 群友画像与发言分布榜</div>' +
+        '<div class="claude-persona-grid" style="margin-bottom:32px">';
+      speakers.forEach(spk => {
+        html += '<div class="claude-persona-card">' +
+          '<div>' +
+            '<div class="claude-persona-name">' + esc(spk.name) + '</div>' +
+            '<div style="font-size:11.5px;color:var(--claude-text-muted)">发言 ' + spk.count + ' 条 ｜ 占比 ' + spk.pct + '%</div>' +
+          '</div>' +
+          '<span class="claude-persona-tag ' + pillClass(spk.color) + '">' + esc(spk.persona) + '</span>' +
+        '</div>';
+      });
+      html += '</div>';
+    }
+
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:20px;border-top:1px solid var(--claude-border);margin-top:20px;flex-wrap:wrap">' +
+      (prevGroup ? '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(prevGroup.code) + '\')">← 上一个群：' + esc(prevGroup.name) + '</button>' : '<div></div>') +
+      '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'__ALL__\')">🌐 返回全群总览</button>' +
+      (nextGroup ? '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(nextGroup.code) + '\')">下一个群：' + esc(nextGroup.name) + ' →</button>' : '<div></div>') +
+    '</div>';
+
+    html += '</div></div>';
+    slot.innerHTML = html;
+  }
+
   function renderMarkdownView() {
     return '<div class="section-card">' +
       '<div class="section-head">' +
@@ -2039,7 +2935,11 @@ mark.hl {
     renderHeader();
     const root = document.getElementById('app-root');
     if (!root) return;
-    if (state.view === 'markdown') {
+    if (state.view === 'claude') {
+      root.innerHTML = renderClaudeView();
+      renderClaudeSidebar();
+      renderClaudeContent();
+    } else if (state.view === 'markdown') {
       root.innerHTML = renderMarkdownView();
     } else if (state.view === 'paper') {
       root.innerHTML = renderPaperDailyView();
