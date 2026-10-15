@@ -10,3 +10,9 @@ run/
 .agents/
 injector/out/
 injector/attempt-*/
+build/
+dist/
+build_tmp/
+release_pkg/
+*.spec
+smoke_result.txt

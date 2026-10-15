@@ -13,12 +13,18 @@
    - 📊 群聊活跃度微画像（纯本地统计指标，零 LLM 消耗）
 """
 
+import os
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
-from pydantic import BaseModel, Field
 
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+if _CUR_DIR not in sys.path:
+    sys.path.insert(0, _CUR_DIR)
+
+from pydantic import BaseModel, Field
 from ntqq_segmenter import TopicCluster
 
 TZ = timezone(timedelta(hours=8))

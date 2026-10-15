@@ -12,9 +12,15 @@
 """
 
 import json
+import os
 import sqlite3
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+if _CUR_DIR not in sys.path:
+    sys.path.insert(0, _CUR_DIR)
 
 from ntqq_segmenter import TopicCluster
 
