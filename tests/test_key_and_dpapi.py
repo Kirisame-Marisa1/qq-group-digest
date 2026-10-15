@@ -177,7 +177,7 @@ class TestKeyAndDpapi(unittest.TestCase):
 
                 ver_row = con.execute("SELECT value FROM meta WHERE key='db_schema_version'").fetchone()
                 self.assertIsNotNone(ver_row)
-                self.assertEqual(ver_row[0], '4')
+                self.assertTrue(int(ver_row[0]) >= 4)
 
                 msg_cols = {r[1] for r in con.execute('PRAGMA table_info(messages)')}
                 self.assertIn('seq', msg_cols)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qq-group-digest"
-version = "0.2.0"
+version = "0.3.0"
 description = "把 QQ 群聊与私聊变成可检索、可统计、可总结的本地资料库（全程本地、只读、不登录）"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -49,6 +49,13 @@ py-modules = [
     "ntqq_media",
     "ntqq_glossary",
     "ntqq_group_state",
+    "ntqq_snapshot",
+    "ntqq_parser",
+    "ntqq_vision_filter",
+    "ntqq_normalizer",
+    "ntqq_segmenter",
+    "ntqq_summary_tree",
+    "ntqq_report_schema",
 ]
 
 [tool.pytest.ini_options]

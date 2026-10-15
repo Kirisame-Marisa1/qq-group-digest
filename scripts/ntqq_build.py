@@ -15,12 +15,36 @@ from ntqq_core import (load_config, validate_config, load_schema, find_schema, e
                        build_names, open_index, decode_body, decode_forward, format_forward,
                        pb_fields, rebuild_fts, src_db, now_ts, local, fmt,
                        TZ, RUN, PLAIN, CACHE, log, log_debug, log_warn, log_error, set_log_level)
+try:
+    from ntqq_normalizer import NoiseNormalizer
+except ImportError:
+    NoiseNormalizer = None
 
 
 def flush_media(idx, mbuf):
     if mbuf:
         idx.executemany('INSERT OR REPLACE INTO media VALUES (%s)' % ','.join('?' * 10), mbuf)
         mbuf.clear()
+
+
+def flush_buf(idx, buf, normalizer=None):
+    if not buf:
+        return
+    rows = buf
+    if normalizer is not None:
+        try:
+            norm = normalizer.normalize_batch(buf)
+            rows = [
+                (m.msg_id, m.ts, m.day, m.hour, m.group_code, m.group_name,
+                 m.sender_uid, m.sender_qq, m.sender_name, m.direction,
+                 m.msg_type, m.subtype, m.kind, m.text, m.reply_seq, m.seq)
+                for m in norm
+            ]
+        except Exception as e:
+            log_debug('复读折叠异常: %s' % e)
+            rows = buf
+    idx.executemany('INSERT OR REPLACE INTO messages VALUES (%s)' % ','.join('?' * 16), rows)
+    buf.clear()
 
 KEYS = ['seq', 'direction', 'sender_uid', 'group_code_str', 'group_key',
         'sender_qq', 'time', 'card', 'nick', 'msg_type', 'subtype', 'body', 'reply_seq', 'forward']
@@ -331,6 +355,7 @@ def build_once(a):
                % (cols, G['group_key'], G['day'], G['day'], G['day']))
 
     con = None if stream else open_ro(PATHS)
+    normalizer = None if getattr(a, 'no_fold_repeats', False) or (NoiseNormalizer is None) else NoiseNormalizer()
     buf = []
     mbuf = []
     n = 0
@@ -395,6 +420,10 @@ def build_once(a):
                     for x, y, z in pb_fields(c_f):
                         sf.setdefault(x, []).append(z)
                     if sf.get(45002, [0])[0] == 2:
+                        decl_sz = sf.get(45405, [0])[0] or 0
+                        # L1 过滤：跳过 < 15KB 的微小贴纸/表情（可通过 --no-filter-images 关闭）
+                        if not getattr(a, 'no_filter_images', False) and 0 < decl_sz < 15360:
+                            continue
                         mm = sf.get(45406, [b''])[0]
                         if isinstance(mm, (bytes, bytearray)) and len(mm) == 16:
                             # 顺带记下多媒体 CDN 的 host 与 spec=0（原图）路径，
@@ -409,7 +438,7 @@ def build_once(a):
                                     break
                             mbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '',
                                          g, group_names.get(g, ''), name, mm.hex(),
-                                         sf.get(45405, [0])[0] or 0, host, p0))
+                                         decl_sz, host, p0))
             except Exception as e:
                 log_warn('[warn] 图片登记异常（msg_id=%s）: %s' % (r[0], str(e)[:120]))
         # 转发：把 40900 里的原始消息展开，正文接在后面
@@ -426,8 +455,7 @@ def build_once(a):
                     r[I['direction']] or 0, r[I['msg_type']] or 0, r[I['subtype']] or 0,
                     kind, text, r[I['reply_seq']] or 0, r[I['seq']] or 0))
         while len(buf) >= 4000:
-            idx.executemany('INSERT OR REPLACE INTO messages VALUES (%s)' % ','.join('?' * 16), buf[:4000])
-            del buf[:4000]
+            flush_buf(idx, buf, normalizer)
             idx.commit()
         if len(mbuf) >= 4000:
             flush_media(idx, mbuf)
@@ -534,7 +562,7 @@ def build_once(a):
             take(g, rows)
             done_g(g)
     if buf:
-        idx.executemany('INSERT OR REPLACE INTO messages VALUES (%s)' % ','.join('?' * 16), buf)
+        flush_buf(idx, buf, normalizer)
         idx.commit()
     flush_media(idx, mbuf)
     idx.commit()
@@ -720,6 +748,8 @@ def main():
     ap.add_argument('--only-groups', default=None, help='逗号分隔的群号，仅重建这些群')
     ap.add_argument('--include-c2c', action='store_true', help='同时索引私聊消息（存入独立 c2c_messages 表）')
     ap.add_argument('--clean-plain', action='store_true', help='构建索引后自动删除 data/plain/ 下的明文库副本')
+    ap.add_argument('--no-fold-repeats', action='store_true', default=False, help='禁用连续相同发言复读折叠')
+    ap.add_argument('--no-filter-images', action='store_true', default=False, help='禁用 <15KB 微小表情图元数据过滤')
     ap.add_argument('--watch', action='store_true', help='持续监听模式：检测源库变动并自动增量刷新索引')
     ap.add_argument('--interval', type=int, default=300, help='--watch 模式的轮询间隔秒数（默认 300s）')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志（同时写到控制台）')

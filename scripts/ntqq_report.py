@@ -10,10 +10,11 @@
 """
 import argparse, bisect, json, math, os, re, sqlite3, sys
 from collections import Counter
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, now_ts, fmt, parse_when, log, log_debug, log_warn, set_log_level,
                        APP, OUTPUT, ensure_dirs, KNOW, GLOSSARY, TZ, MEDIA)
-from datetime import datetime, timedelta
 import sqlite3 as _sq3
 
 SYS_KINDS = ('system', 'empty')
@@ -661,6 +662,8 @@ def main():
     ap.add_argument('--media-list', default=None, help='把窗口内图片候选写成 TSV')
     ap.add_argument('--no-group-state', action='store_true',
                     help='不在报告里输出「群变更」（新入群/退群/改名）段落')
+    ap.add_argument('--structured', action='store_true', default=False,
+                    help='采用模块 5 规范：4 大标准化板块（热点/资源/金句/微画像）与 [Ref: #seq] 溯源锚点')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
     a = ap.parse_args()
 
@@ -1067,8 +1070,21 @@ def main():
                     out.append('')
         for nconv, ntot, code, name, rows, prev in prepared:
             disp_name = code_label(code) if a.anonymize else name
-            txt, _ = block(code, disp_name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
-            out.append(txt)
+            if getattr(a, 'structured', False):
+                from ntqq_segmenter import ConversationSegmenter
+                from ntqq_report_schema import build_structured_report, render_markdown
+                from ntqq_summary_tree import build_and_save_micro_digests
+                segmenter = ConversationSegmenter()
+                clusters = segmenter.segment_messages(rows)
+                try:
+                    build_and_save_micro_digests(idx, clusters)
+                except Exception as e:
+                    log_debug('保存 micro_digests 异常: %s' % e)
+                rep = build_structured_report(rows, clusters, disp_name or f"群_{code}", code)
+                out.append(render_markdown(rep))
+            else:
+                txt, _ = block(code, disp_name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
+                out.append(txt)
             result['groups'].append({'code': code_label(code) if a.anonymize else code,
                                      'name': disp_name, 'conv': nconv, 'n': ntot,
                                      'first': min(r['ts'] for r in rows), 'last': max(r['ts'] for r in rows)})
@@ -1121,6 +1137,16 @@ def main():
             result['html'] = html_out
         with open(a.json, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+
+
+def generate_structured_digest(group_code: int, rows: Optional[List[Dict[str, Any]]] = None, group_name: str = "") -> str:
+    """生成单群的模块 5 标准化 4 大板块可溯源报告 Markdown。"""
+    from ntqq_segmenter import ConversationSegmenter
+    from ntqq_report_schema import build_structured_report, render_markdown
+    segmenter = ConversationSegmenter()
+    clusters = segmenter.segment_messages(rows or [])
+    rep = build_structured_report(rows or [], clusters, group_name or f"群_{group_code}", group_code)
+    return render_markdown(rep)
 
 
 if __name__ == '__main__':

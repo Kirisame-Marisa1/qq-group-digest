@@ -69,6 +69,7 @@ python 'scripts\ntqq_report.py' --class-mode --days 7 --out '...'
 python 'scripts\ntqq_report.py' --group <群号> --days 2 --out '...'
 python 'scripts\ntqq_report.py' --search <关键词> --days 7 --out '...'
 python 'scripts\ntqq_report.py' --search '关键词A 关键词B' --days 7 --out '...'
+python 'scripts\ntqq_report.py' --group <群号> --days 7 --structured --out '...'
 python 'scripts\ntqq_report.py' --list-groups
 ```
 

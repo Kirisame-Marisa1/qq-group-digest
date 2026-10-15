@@ -142,6 +142,9 @@ python scripts/ntqq_report.py --c2c --list-groups
 # 班群模式：重点速览在前 + 逐群不限篇幅
 python scripts/ntqq_report.py --class-mode --days 7
 
+# 可溯源结构化报告（4 大标准化板块：热点话题 Top N、重要资源归档、金句高光、活跃度微画像 + 精确 [Ref: #seq] 锚点）
+python scripts/ntqq_report.py --group <群号> --days 7 --structured --out ../output/digest_structured.md
+
 # 图片：本机已落盘的直接用，缺的按 md5 从 CDN 取
 python scripts/ntqq_media.py --groups <群号,群号> --days 30 --workers 4
 

@@ -321,6 +321,12 @@ def decode_body(blob, sc):
     """40800 -> (kind, text)。kind 取 text/image/file/sticker/reply/forward/system/..."""
     if not blob:
         return 'empty', ''
+    try:
+        from ntqq_parser import MessageParser
+        parsed = MessageParser.parse_body(blob, sc)
+        return parsed.raw_kind, parsed.normalized_text
+    except Exception:
+        pass
     B = sc['body_40800']
     try:
         top = pb_fields(blob)
@@ -1039,6 +1045,27 @@ CREATE TABLE IF NOT EXISTS c2c_groups(
   group_code INTEGER PRIMARY KEY, group_name TEXT,
   first_ts INTEGER, last_ts INTEGER, n INTEGER
 );
+CREATE TABLE IF NOT EXISTS group_cursors(
+  group_code INTEGER PRIMARY KEY,
+  last_processed_msg_seq INTEGER DEFAULT 0,
+  last_msg_time INTEGER DEFAULT 0,
+  updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS micro_digests(
+  cluster_id TEXT PRIMARY KEY,
+  group_code INTEGER,
+  start_seq INTEGER,
+  end_seq INTEGER,
+  start_ts INTEGER,
+  end_ts INTEGER,
+  title TEXT,
+  summary TEXT,
+  entities TEXT,
+  participants TEXT,
+  msg_count INTEGER,
+  created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_md_group_ts ON micro_digests(group_code, start_ts);
 """
 
 
@@ -1089,11 +1116,39 @@ def _mig_4_messages_seq(con):
         con.execute('ALTER TABLE messages ADD COLUMN seq INTEGER')
 
 
+def _mig_5_hierarchical_index(con):
+    """v5: 建立群级别增量游标 group_cursors 与分层微摘要表 micro_digests。"""
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS group_cursors (
+      group_code INTEGER PRIMARY KEY,
+      last_processed_msg_seq INTEGER DEFAULT 0,
+      last_msg_time INTEGER DEFAULT 0,
+      updated_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS micro_digests (
+      cluster_id TEXT PRIMARY KEY,
+      group_code INTEGER,
+      start_seq INTEGER,
+      end_seq INTEGER,
+      start_ts INTEGER,
+      end_ts INTEGER,
+      title TEXT,
+      summary TEXT,
+      entities TEXT,
+      participants TEXT,
+      msg_count INTEGER,
+      created_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_md_group_ts ON micro_digests(group_code, start_ts);
+    """)
+
+
 INDEX_MIGRATIONS = [
     (1, 'media_host_path', _mig_1_media_host_path),
     (2, 'c2c_tables', _mig_2_c2c_tables),
     (3, 'messages_fts5', _mig_3_fts5),
     (4, 'messages_seq_col', _mig_4_messages_seq),
+    (5, 'hierarchical_index', _mig_5_hierarchical_index),
 ]
 
 
@@ -1128,4 +1183,15 @@ def open_index():
     con.executescript(INDEX_SCHEMA)
     run_index_migrations(con)
     return con
+
+
+# ── Phase 2 演进模块统一导出 ──────────────────────────────────────────────
+try:
+    from ntqq_snapshot import SafeDBSnapshot, make_safe_snapshot
+    from ntqq_parser import MessageParser, ParsedMessage, AtTarget, ReplyInfo, CardInfo
+    from ntqq_vision_filter import ImageFilterPipeline, FilterTier, ImageFilterResult, compute_dhash
+    from ntqq_normalizer import NoiseNormalizer, NormalizedMessage
+except ImportError:
+    pass
+
 
