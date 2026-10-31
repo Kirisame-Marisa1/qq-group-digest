@@ -23,6 +23,8 @@ if sys.platform == "win32":
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_DIR = os.path.join(BASE_DIR, "dist", "gui_app")
 BUILD_TMP_PYTHON = os.path.join(BASE_DIR, "build_tmp", "python")
+if not os.path.exists(BUILD_TMP_PYTHON) and os.path.exists(r"C:\Users\LENOVO\Desktop\gui_app-win64\python"):
+    BUILD_TMP_PYTHON = r"C:\Users\LENOVO\Desktop\gui_app-win64\python"
 RELEASE_PKG = os.path.join(BASE_DIR, "release_pkg")
 OUTPUT_ZIP = os.path.join(BASE_DIR, "gui_app-win64.zip")
 

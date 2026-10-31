@@ -4,7 +4,9 @@
 
 特性：
   1. 100% 本地离线单文件（内联现代 CSS + 原生 JS，不含任何外部 CDN/URL）
-  2. 支持三种视图一键切换：
+  2. 支持多种精美视图一键切换：
+     - ✨ Claude 视窗（Anthropic 双轨流式速读、Artifact 设计语言）
+     - 🌸 莫奈纸雕视图（参考 BaxterL/maison-des-mots 法式洛可可纸雕与手账拼贴美学，模切白边、右缘书签、信笺与火漆印章）
      - 🍱 Bento 交互看板（多群筛选、实时搜索、时段话题聚类、可展开 QQ 气泡、群友画像榜）
      - 📰 纸上日报视图（参考 TraceMemo paperdaily 报纸排版，适合沉浸速读与打印）
      - 📄 Markdown 原文视图（支持一键复制 Markdown）
@@ -583,6 +585,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --claude-green: #8fa671;
   --claude-green-soft: rgba(143, 166, 113, 0.16);
   --claude-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45);
+  --monet-ink: #e5e9f5;
+  --monet-ink-soft: #9faecb;
+  --monet-fog: #7887a4;
+  --monet-fog-light: #3f4b67;
+  --monet-silver: #3d4a68;
+  --monet-silver-light: #1f273b;
+  --monet-paper: #141724;
+  --monet-paper-light: #1b2032;
+  --monet-paper-deep: #0e111a;
+  --monet-lotus: #f0a8b9;
+  --monet-lotus-soft: rgba(240, 168, 185, 0.22);
+  --monet-line: rgba(229, 233, 245, 0.35);
+  --monet-hairline: rgba(229, 233, 245, 0.15);
+  --monet-paper-shadow: 0 0 0 3px rgba(27, 32, 50, 0.9), 0 0 0 4px rgba(0, 0, 0, 0.35), 0 16px 30px rgba(0, 0, 0, 0.5);
 }
 :root[data-theme="light"] {
   --bg: #f1f5f9;
@@ -630,11 +646,29 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   --claude-green: #788c5d;
   --claude-green-soft: rgba(120, 140, 93, 0.12);
   --claude-shadow: 0 4px 20px -2px rgba(20, 20, 19, 0.05), 0 2px 6px -1px rgba(20, 20, 19, 0.03);
+  --monet-ink: #1e2748;
+  --monet-ink-soft: #46536f;
+  --monet-fog: #5c6884;
+  --monet-fog-light: #a9b3cc;
+  --monet-silver: #bfc8e0;
+  --monet-silver-light: #dce2f1;
+  --monet-paper: #fbf9f4;
+  --monet-paper-light: #fffdf8;
+  --monet-paper-deep: #eef0f5;
+  --monet-lotus: #e8c9d0;
+  --monet-lotus-soft: rgba(232, 201, 208, 0.35);
+  --monet-line: rgba(30, 39, 72, 0.42);
+  --monet-hairline: rgba(30, 39, 72, 0.16);
+  --monet-paper-shadow: 0 0 0 3px rgba(255, 255, 255, 0.88), 0 0 0 4px rgba(30, 39, 72, 0.12), 0 16px 30px rgba(30, 39, 72, 0.14);
 }
 :root {
   --claude-serif: "Lora", "Georgia", "Songti SC", "STSong", "Source Han Serif CN", "Noto Serif CJK SC", "SimSun", serif;
   --claude-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --claude-mono: "SF Mono", "Fira Code", "Consolas", monospace;
+  --monet-serif: "Cormorant Garamond", "Georgia", "Songti SC", "STSong", "Noto Serif SC", serif;
+  --monet-cursive: "Pinyon Script", "Playfair Display", "Baskerville", cursive, serif;
+  --monet-script: "LXGW WenKai", "KaiTi", "STKaiti", "FangSong", serif;
+  --monet-typewriter: "Special Elite", "Courier New", "Consolas", monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1635,6 +1669,447 @@ mark.hl {
   font-weight: 600;
 }
 
+/* Monet / Maison des Mots Papercraft Experience */
+.monet-stage {
+  max-width: 1400px;
+  margin: 0 auto;
+  position: relative;
+  background:
+    radial-gradient(circle at 10% 12%, var(--monet-silver-light) 0%, transparent 45%),
+    radial-gradient(circle at 90% 88%, var(--monet-lotus-soft) 0%, transparent 50%),
+    var(--monet-paper-deep);
+  border-radius: 18px;
+  padding: 24px;
+  box-shadow: 0 20px 48px -12px rgba(30, 39, 72, 0.15);
+  font-family: var(--monet-serif);
+  color: var(--monet-ink);
+}
+.monet-book-shell {
+  background: var(--monet-paper);
+  border: 1px solid var(--monet-hairline);
+  outline: 3px solid rgba(255, 255, 255, 0.88);
+  border-radius: 14px;
+  padding: 34px 38px;
+  position: relative;
+  box-shadow: var(--monet-paper-shadow);
+}
+.monet-corner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  opacity: 0.65;
+  color: var(--monet-fog-light);
+}
+.monet-corner.tl { top: 12px; left: 12px; }
+.monet-corner.tr { top: 12px; right: 12px; }
+.monet-corner.bl { bottom: 12px; left: 12px; }
+.monet-corner.br { bottom: 12px; right: 12px; }
+
+.monet-masthead {
+  border-bottom: 2px solid var(--monet-line);
+  padding-bottom: 22px;
+  margin-bottom: 28px;
+  text-align: center;
+  position: relative;
+}
+.monet-masthead-archival {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--monet-typewriter);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--monet-fog);
+  text-transform: uppercase;
+  border-bottom: 1px dashed var(--monet-hairline);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+}
+.monet-masthead-title {
+  font-family: var(--monet-serif);
+  font-size: clamp(30px, 4.2vw, 46px);
+  font-weight: 700;
+  color: var(--monet-ink);
+  letter-spacing: 0.04em;
+  line-height: 1.22;
+}
+.monet-masthead-sub {
+  font-family: var(--monet-cursive);
+  font-size: clamp(17px, 2.2vw, 24px);
+  color: var(--monet-ink-soft);
+  margin-top: 6px;
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
+.monet-ledger-strip {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-family: var(--monet-typewriter);
+  font-size: 12px;
+  color: var(--monet-fog);
+  margin-top: 14px;
+  padding: 8px 18px;
+  background: var(--monet-paper-light);
+  border: 1px solid var(--monet-hairline);
+  border-radius: 6px;
+}
+.monet-seal-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--monet-lotus-soft);
+  color: var(--monet-ink);
+  border: 1px solid var(--monet-lotus);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--monet-serif);
+  font-weight: 600;
+}
+
+.monet-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  position: relative;
+}
+.monet-main-flow {
+  flex: 1;
+  min-width: 0;
+}
+.monet-ribbons {
+  width: 146px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 76px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 20;
+}
+.monet-ribbon-btn {
+  display: block;
+  width: 100%;
+  padding: 10px 10px 16px;
+  background: var(--monet-paper-light);
+  border: 1px solid var(--monet-line);
+  color: var(--monet-ink-soft);
+  text-decoration: none;
+  text-align: center;
+  font-family: var(--monet-serif);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), 50% 100%, 0 calc(100% - 10px));
+  box-shadow: 0 4px 10px rgba(30, 39, 72, 0.06);
+}
+.monet-ribbon-btn::before {
+  content: '';
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--monet-fog-light);
+  margin: 0 auto 6px;
+}
+.monet-ribbon-btn:hover {
+  transform: translateX(-6px);
+  background: var(--monet-paper);
+  color: var(--monet-ink);
+  border-color: var(--monet-ink);
+}
+.monet-ribbon-btn.active {
+  transform: translateX(-10px);
+  background: var(--monet-paper);
+  color: var(--monet-ink);
+  border-color: var(--monet-ink);
+  font-weight: 700;
+  box-shadow: 0 6px 16px rgba(30, 39, 72, 0.12);
+  border-top: 3px solid var(--monet-lotus);
+}
+
+.monet-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 22px;
+  padding: 12px 18px;
+  background: var(--monet-paper-light);
+  border: 1px solid var(--monet-hairline);
+  border-radius: 8px;
+}
+.monet-search-input {
+  padding: 6px 12px;
+  font-size: 13px;
+  border: 1px solid var(--monet-hairline);
+  border-radius: 6px;
+  background: var(--monet-paper);
+  color: var(--monet-ink);
+  outline: none;
+  font-family: var(--monet-serif);
+  width: 240px;
+}
+.monet-search-input:focus {
+  border-color: var(--monet-ink);
+  box-shadow: 0 0 0 2px var(--monet-silver-light);
+}
+.monet-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border: 1px solid var(--monet-line);
+  border-radius: 6px;
+  background: var(--monet-paper-light);
+  color: var(--monet-ink);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--monet-serif);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.monet-btn:hover {
+  background: var(--monet-paper);
+  border-color: var(--monet-ink);
+  box-shadow: 0 2px 6px rgba(30, 39, 72, 0.08);
+}
+.monet-btn-lotus {
+  background: var(--monet-lotus-soft);
+  border-color: var(--monet-lotus);
+}
+
+.monet-lettre-card {
+  background: var(--monet-paper-light);
+  border: 1px solid var(--monet-hairline);
+  box-shadow: var(--monet-paper-shadow);
+  border-radius: 8px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  position: relative;
+  transition: transform 0.2s;
+}
+.monet-lettre-card:hover {
+  transform: translateY(-2px);
+}
+.monet-washi-tape {
+  position: absolute;
+  top: -8px;
+  left: 36px;
+  width: 74px;
+  height: 16px;
+  background: rgba(232, 201, 208, 0.75);
+  border-left: 2px dashed rgba(255, 255, 255, 0.6);
+  border-right: 2px dashed rgba(255, 255, 255, 0.6);
+  transform: rotate(-1.5deg);
+  box-shadow: 0 1px 3px rgba(30, 39, 72, 0.08);
+  pointer-events: none;
+}
+.monet-washi-tape.silver {
+  background: rgba(191, 200, 224, 0.65);
+  left: auto;
+  right: 36px;
+  transform: rotate(2deg);
+}
+.monet-lettre-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px dashed var(--monet-line);
+  padding-bottom: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.monet-lettre-num {
+  font-family: var(--monet-typewriter);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--monet-fog);
+  text-transform: uppercase;
+}
+.monet-lettre-title {
+  font-family: var(--monet-serif);
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--monet-ink);
+}
+.monet-lettre-meta {
+  font-family: var(--monet-typewriter);
+  font-size: 11.5px;
+  color: var(--monet-fog);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.monet-lettre-body {
+  font-family: var(--monet-script);
+  font-size: 15px;
+  line-height: 1.88;
+  color: var(--monet-ink);
+}
+.monet-lettre-topic {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--monet-hairline);
+}
+.monet-lettre-topic:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+.monet-topic-title {
+  font-family: var(--monet-serif);
+  font-weight: 700;
+  font-size: 15.5px;
+  color: var(--monet-ink);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.monet-quote-box {
+  padding: 8px 14px;
+  margin: 6px 0 6px 14px;
+  background: rgba(220, 226, 241, 0.28);
+  border-left: 3px solid var(--monet-silver);
+  border-radius: 0 4px 4px 0;
+  font-style: italic;
+  font-size: 14px;
+  color: var(--monet-ink-soft);
+}
+.monet-drawer-toggle {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px dashed var(--monet-hairline);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--monet-fog);
+  cursor: pointer;
+  font-family: var(--monet-typewriter);
+  transition: all 0.15s;
+}
+.monet-drawer-toggle:hover {
+  border-color: var(--monet-ink);
+  color: var(--monet-ink);
+}
+
+.monet-focus-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.monet-postcard {
+  background: var(--monet-paper);
+  border: 1px solid var(--monet-hairline);
+  box-shadow: 0 4px 14px rgba(30, 39, 72, 0.08);
+  border-radius: 6px;
+  padding: 16px 18px;
+  position: relative;
+}
+.monet-postmark {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px dashed var(--monet-fog);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-family: var(--monet-typewriter);
+  color: var(--monet-fog);
+  transform: rotate(8deg);
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.monet-souvenir-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.monet-souvenir-card {
+  background: var(--monet-paper-light);
+  border: 1px solid var(--monet-hairline);
+  box-shadow: 0 3px 10px rgba(30, 39, 72, 0.06);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.monet-souvenir-name {
+  font-family: var(--monet-serif);
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--monet-ink);
+}
+.monet-souvenir-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--monet-lotus-soft);
+  color: var(--monet-ink);
+  border: 1px solid var(--monet-lotus);
+  font-family: var(--monet-serif);
+}
+
+.monet-toast {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  background: var(--monet-paper);
+  color: var(--monet-ink);
+  border: 1px solid var(--monet-ink);
+  box-shadow: var(--monet-paper-shadow);
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-family: var(--monet-serif);
+  font-size: 13px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateY(40px);
+  opacity: 0;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+.monet-toast.show {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+@media (max-width: 960px) {
+  .monet-layout { flex-direction: column; }
+  .monet-ribbons {
+    width: 100%;
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .monet-ribbon-btn {
+    clip-path: none;
+    border-radius: 6px;
+    white-space: nowrap;
+    padding: 8px 12px;
+  }
+  .monet-book-shell { padding: 20px 16px; }
+}
+
 @media print {
   .topbar, .filter-bar, .no-print, .claude-sidebar { display: none !important; }
   body { background: #fff; color: #000; padding: 0; }
@@ -1658,6 +2133,7 @@ mark.hl {
     <div class="toolbar">
       <div class="mode-switch" id="view-switcher">
         <button class="mode-btn active" data-view="claude" onclick="switchView('claude')">✨ Claude 视窗</button>
+        <button class="mode-btn" data-view="monet" onclick="switchView('monet')">🌸 莫奈纸雕</button>
         <button class="mode-btn" data-view="bento" onclick="switchView('bento')">🍱 Bento 交互看板</button>
         <button class="mode-btn" data-view="paper" onclick="switchView('paper')">📰 纸上日报视图</button>
         <button class="mode-btn" data-view="markdown" onclick="switchView('markdown')">📄 Markdown 原文</button>
@@ -1679,15 +2155,22 @@ mark.hl {
   const DATA = JSON.parse(rawJson);
 
   const urlParamView = (new URLSearchParams(window.location.search).get('view') || window.location.hash.replace('#', ''));
+  let savedView = null;
+  try { savedView = localStorage.getItem('ntqq_preferred_view'); } catch (e) {}
   let defaultView = 'claude';
-  if (['claude', 'bento', 'paper', 'markdown'].includes(urlParamView)) {
+  if (['claude', 'monet', 'bento', 'paper', 'markdown'].includes(urlParamView)) {
     defaultView = urlParamView;
+  } else if (savedView && ['claude', 'monet', 'bento', 'paper', 'markdown'].includes(savedView)) {
+    defaultView = savedView;
   }
 
   let state = {
-    view: defaultView,          // 'claude' | 'bento' | 'paper' | 'markdown'
+    view: defaultView,          // 'claude' | 'monet' | 'bento' | 'paper' | 'markdown'
     activeGroup: '__ALL__',     // '__ALL__' or group.code
     claudeActiveGroup: '__ALL__', // '__ALL__' or group.code
+    monetActiveGroup: '__ALL__',  // '__ALL__' or group.code
+    monetSearchQuery: '',
+    monetExpandedThreads: {},
     groupSubTab: 'threads',     // 'threads' | 'stream'
     radarFilter: 'ALL',         // 'ALL' | 'CLASS' | 'AT' | 'FWD'
     searchQuery: '',
@@ -1753,6 +2236,7 @@ mark.hl {
 
   window.switchView = function(v) {
     state.view = v;
+    try { localStorage.setItem('ntqq_preferred_view', v); } catch (e) {}
     document.querySelectorAll('#view-switcher .mode-btn').forEach(btn => {
       btn.classList.toggle('active', btn.getAttribute('data-view') === v);
     });
@@ -2921,6 +3405,353 @@ mark.hl {
     slot.innerHTML = html;
   }
 
+  window.selectMonetGroup = function(code) {
+    state.monetActiveGroup = code;
+    render();
+  };
+
+  window.onMonetSearch = function(val) {
+    state.monetSearchQuery = val;
+    render();
+    const inp = document.getElementById('monet-search-input');
+    if (inp) {
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+  };
+
+  window.toggleMonetThread = function(tid) {
+    state.monetExpandedThreads[tid] = !state.monetExpandedThreads[tid];
+    render();
+  };
+
+  window.copyMonetMarkdown = function() {
+    const md = DATA.markdown || '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(() => {
+        showMonetToast('🌸 [CACHET APPOSÉ · COPIÉ] 简报全卷已盖印并复制到剪贴板');
+      }).catch(() => {
+        copyFallback(md);
+      });
+    } else {
+      copyFallback(md);
+    }
+    function copyFallback(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        showMonetToast('🌸 [CACHET APPOSÉ · COPIÉ] 简报全卷已盖印并复制到剪贴板');
+      } catch (e) {
+        showMonetToast('⚠️ 复制失败，请手动选取');
+      }
+      document.body.removeChild(ta);
+    }
+  };
+
+  function showMonetToast(msg) {
+    let t = document.getElementById('monet-toast');
+    if (!t) {
+      t = document.createElement('div');
+      t.id = 'monet-toast';
+      t.className = 'monet-toast';
+      document.body.appendChild(t);
+    }
+    t.innerHTML = msg;
+    t.classList.add('show');
+    clearTimeout(window._monetToastTimer);
+    window._monetToastTimer = setTimeout(() => {
+      t.classList.remove('show');
+    }, 2400);
+  }
+
+  function renderMonetView() {
+    const m = DATA.meta || {};
+    const k = DATA.kpis || {};
+    const groups = DATA.groups || [];
+    const focus = DATA.focus_items || [];
+    const q = (state.monetSearchQuery || '').trim().toLowerCase();
+
+    // 1. Non-digest Mode (Query / Member / Search / Ask)
+    if (DATA.mode !== 'digest') {
+      return '<div class="monet-stage">' +
+        '<div class="monet-book-shell">' +
+          '<svg class="monet-corner tl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12V6a2 2 0 0 1 2-2h6M4 4l6 6M4 4h4M4 4v4"/></svg>' +
+          '<svg class="monet-corner tr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12V6a2 2 0 0 0-2-2h-6M20 4l-6 6M20 4h-4M20 4v4"/></svg>' +
+          '<svg class="monet-corner bl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12v6a2 2 0 0 0 2 2h6M4 20l6-6M4 20h4M4 20v-4"/></svg>' +
+          '<svg class="monet-corner br" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12v6a2 2 0 0 1-2 2h-6M20 20l-6-6M20 20h-4M20 20v-4"/></svg>' +
+          '<div class="monet-masthead">' +
+            '<div class="monet-masthead-archival">' +
+              '<span>LETTRES DE GIVERNY · N° 001 / PARIS · 2026</span>' +
+              '<span>ÉDITION LOCALE · SANS RÉSEAU ⚜</span>' +
+            '</div>' +
+            '<div class="monet-masthead-title">' + esc(m.title || '莫奈纸雕 · 卷宗检索信札') + '</div>' +
+            '<div class="monet-masthead-sub">« L’art de converser au fil des mots, comme des reflets sur l’eau »</div>' +
+            '<div class="monet-ledger-strip">' +
+              '<span>📅 纪事周期：' + esc(m.window_str || '-') + '</span>' +
+              '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || '-') + '</span>' +
+              '<span class="monet-seal-badge">🌸 CACHET DE CIRE</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="monet-toolbar">' +
+            '<div style="font-size:13px;color:var(--monet-ink-soft);font-family:var(--monet-typewriter)">ARCHIVE MANUSCRITE · 专属卷宗信札</div>' +
+            '<div style="display:flex;gap:8px">' +
+              '<button class="monet-btn monet-btn-lotus" onclick="copyMonetMarkdown()">📜 抄录全篇信笺 (复制 Markdown)</button>' +
+              '<button class="monet-btn" onclick="window.print()">🖨️ 打印书册</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="monet-lettre-card" style="font-family:var(--monet-script);font-size:15px;line-height:1.9">' +
+            '<div class="monet-washi-tape"></div>' +
+            '<div class="monet-lettre-body" style="white-space:pre-wrap;word-break:break-word">' + esc(DATA.markdown || '') + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    // 2. Digest Mode
+    let html = '<div class="monet-stage">' +
+      '<div class="monet-book-shell">' +
+        // Four Corner Filigrees
+        '<svg class="monet-corner tl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12V6a2 2 0 0 1 2-2h6M4 4l6 6M4 4h4M4 4v4"/></svg>' +
+        '<svg class="monet-corner tr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12V6a2 2 0 0 0-2-2h-6M20 4l-6 6M20 4h-4M20 4v4"/></svg>' +
+        '<svg class="monet-corner bl" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 12v6a2 2 0 0 0 2 2h6M4 20l6-6M4 20h4M4 20v-4"/></svg>' +
+        '<svg class="monet-corner br" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12v6a2 2 0 0 1-2 2h-6M20 20l-6-6M20 20h-4M20 20v-4"/></svg>' +
+
+        // Gazette Masthead
+        '<div class="monet-masthead">' +
+          '<div class="monet-masthead-archival">' +
+            '<span>GAZETTE DES SALONS · N° ARCHIVE 2026 / GIVERNY</span>' +
+            '<span>SÉLECTION LOCALE · SANS CONNEXION RÉSEAU ⚜</span>' +
+          '</div>' +
+          '<div class="monet-masthead-title">莫奈纸雕 · 字里行间</div>' +
+          '<div class="monet-masthead-sub">« L’art de converser au fil des mots, comme des reflets sur l’eau »</div>' +
+          '<div class="monet-ledger-strip">' +
+            '<span>📅 纪事周期：' + esc(m.window_str || '-') + '</span>' +
+            '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || '-') + '</span>' +
+            '<span>📜 卷宗收录：' + (k.total_msgs || 0) + ' 条（有效交谈 ' + (k.total_conv || 0) + ' 条 / ' + (k.group_count || 0) + ' 个群室）</span>' +
+            '<span class="monet-seal-badge">🌸 CACHET DE GIVERNY</span>' +
+          '</div>' +
+        '</div>' +
+
+        // Layout with Main Flow + Right Ribbon Bookmarks
+        '<div class="monet-layout">' +
+          '<div class="monet-main-flow">' +
+            // Toolbar
+            '<div class="monet-toolbar">' +
+              '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+                '<input type="search" id="monet-search-input" class="monet-search-input" placeholder="🔍 检索信笺、话题与群友..." value="' + esc(state.monetSearchQuery) + '" oninput="onMonetSearch(this.value)">' +
+                '<span style="font-size:12px;color:var(--monet-fog);font-family:var(--monet-typewriter)">' + groups.length + ' SALONS ENREGISTRÉS</span>' +
+              '</div>' +
+              '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+                '<button class="monet-btn monet-btn-lotus" onclick="copyMonetMarkdown()">📜 抄录全卷信笺 (复制 Markdown)</button>' +
+                '<button class="monet-btn" onclick="window.print()">🖨️ 打印书册</button>' +
+              '</div>' +
+            '</div>';
+
+    // Group Filter Pills
+    html += '<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:12px;margin-bottom:20px">' +
+      '<button class="monet-btn' + (state.monetActiveGroup === '__ALL__' ? ' monet-btn-lotus' : '') + '" style="border-radius:20px;font-size:11.5px" onclick="selectMonetGroup(\'__ALL__\')">' +
+        '🌸 全部信札 (Tous les Salons)' +
+      '</button>';
+    groups.forEach(g => {
+      const act = state.monetActiveGroup === g.code ? ' monet-btn-lotus' : '';
+      html += '<button class="monet-btn' + act + '" style="border-radius:20px;font-size:11.5px;white-space:nowrap" onclick="selectMonetGroup(\'' + esc(g.code) + '\')">' +
+        (g.is_class ? '🎓 ' : '💬 ') + esc(g.name) +
+      '</button>';
+    });
+    html += '</div>';
+
+    // 01 · 重点信笺 (Focus Radar Postcards)
+    if (focus.length && state.monetActiveGroup === '__ALL__') {
+      html += '<section id="monet-sec-focus" style="margin-bottom:34px">' +
+        '<div style="display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--monet-line);padding-bottom:8px;margin-bottom:16px">' +
+          '<div style="font-family:var(--monet-serif);font-size:22px;font-weight:700;color:var(--monet-ink)">' +
+            '01 · 重点信笺 <span style="font-family:var(--monet-cursive);font-size:19px;font-weight:normal;color:var(--monet-ink-soft);margin-left:8px">Avis & Points Chauds</span>' +
+          '</div>' +
+          '<div style="font-family:var(--monet-typewriter);font-size:11px;color:var(--monet-fog)">POSTES PRIORITAIRES (' + focus.length + ')</div>' +
+        '</div>' +
+        '<div class="monet-focus-grid">';
+      focus.slice(0, 8).forEach((f, idx) => {
+        html += '<div class="monet-postcard">' +
+          '<div class="monet-washi-tape' + (idx % 2 === 1 ? ' silver' : '') + '"></div>' +
+          '<div class="monet-postmark"><span>POSTE</span><span>2026</span><span>VALIDE</span></div>' +
+          '<div style="font-family:var(--monet-typewriter);font-size:10.5px;color:var(--monet-fog);letter-spacing:0.1em;margin-bottom:6px">' +
+            'AVIS N° ' + (idx + 1 < 10 ? '0' + (idx + 1) : (idx + 1)) + ' · ' + esc(f.time) +
+          '</div>' +
+          '<div style="font-family:var(--monet-serif);font-weight:700;font-size:14.5px;color:var(--monet-ink);margin-bottom:8px">' +
+            '[' + esc(f.group_name) + '] ' + esc(f.sender) +
+          '</div>' +
+          '<div style="font-family:var(--monet-script);font-size:14px;line-height:1.75;color:var(--monet-ink)">' +
+            highlightText(f.text, q) +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div></section>';
+    }
+
+    // 02 · 各群信札 (Group Letters)
+    html += '<section id="monet-sec-letters" style="margin-bottom:34px">' +
+      '<div style="display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--monet-line);padding-bottom:8px;margin-bottom:20px">' +
+        '<div style="font-family:var(--monet-serif);font-size:22px;font-weight:700;color:var(--monet-ink)">' +
+          '02 · 各群信札 <span style="font-family:var(--monet-cursive);font-size:19px;font-weight:normal;color:var(--monet-ink-soft);margin-left:8px">Lettres des Salons</span>' +
+        '</div>' +
+        '<div style="font-family:var(--monet-typewriter);font-size:11px;color:var(--monet-fog)">RECUEIL DES CONVERSATIONS</div>' +
+      '</div>';
+
+    const displayGroups = state.monetActiveGroup === '__ALL__' ? groups : groups.filter(g => g.code === state.monetActiveGroup);
+    let renderedLetters = 0;
+
+    displayGroups.forEach((g, gIdx) => {
+      if (q) {
+        const matchName = (g.name || '').toLowerCase().includes(q);
+        const matchKws = (g.keywords || []).some(k => k.word.toLowerCase().includes(q));
+        const matchThreads = (g.threads || []).some(t => (t.title || '').toLowerCase().includes(q));
+        const matchQuotes = (g.quotes || []).some(quo => (quo.text || '').toLowerCase().includes(q));
+        if (!matchName && !matchKws && !matchThreads && !matchQuotes) return;
+      }
+      renderedLetters++;
+      const topSpk = (g.speakers || []).slice(0, 6).map(s => esc(s.name) + '(' + s.count + ')').join(' · ');
+      const topKws = (g.keywords || []).slice(0, 8).map(kw => '<span style="background:var(--monet-silver-light);border:1px solid var(--monet-silver);padding:2px 7px;border-radius:10px;font-size:11px;margin-right:4px">' + esc(kw.word) + '</span>').join('');
+
+      html += '<article class="monet-lettre-card" id="monet-letter-' + esc(g.code) + '">' +
+        '<div class="monet-washi-tape' + (gIdx % 2 === 1 ? ' silver' : '') + '"></div>' +
+        '<div class="monet-lettre-hdr">' +
+          '<div>' +
+            '<div class="monet-lettre-num">LETTRE N° ' + (g.idx < 10 ? '0' + g.idx : g.idx) + ' / GIVERNY · ' + (g.is_class ? 'SALON SCOLAIRE' : 'SALON CONVIVIAL') + '</div>' +
+            '<div class="monet-lettre-title">' + (g.is_class ? '🎓 ' : '💬 ') + esc(g.name) + '</div>' +
+          '</div>' +
+          '<div style="text-align:right">' +
+            '<span class="monet-seal-badge">' + (g.code ? 'N° ' + esc(g.code) : 'ARCHIVE') + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="monet-lettre-meta">' +
+          '<span>📜 有效交谈 ' + g.nconv + ' 条</span>' +
+          '<span>👥 活跃群友 ' + g.people_count + ' 位</span>' +
+          '<span>⏰ 话题高峰 ' + (g.peak_hour < 10 ? '0' + g.peak_hour : g.peak_hour) + ':00</span>' +
+        '</div>' +
+        (topKws ? '<div style="margin-bottom:14px;display:flex;flex-wrap:wrap;align-items:center;gap:4px"><span style="font-size:11.5px;color:var(--monet-fog);font-family:var(--monet-typewriter);margin-right:4px">MOTS-CLÉS:</span>' + topKws + '</div>' : '') +
+        (topSpk ? '<div style="font-size:12.5px;color:var(--monet-ink-soft);margin-bottom:16px;font-family:var(--monet-serif)"><strong>核心群友：</strong>' + topSpk + '</div>' : '') +
+        '<div class="monet-lettre-body">';
+
+      (g.threads || []).forEach((t, tIdx) => {
+        const tid = g.code + '-' + t.idx;
+        const isExp = !!state.monetExpandedThreads[tid];
+        html += '<div class="monet-lettre-topic">' +
+          '<div class="monet-topic-title">' +
+            '<span style="font-family:var(--monet-cursive);font-size:18px;color:var(--monet-ink-soft)">Chapitre ' + (tIdx + 1) + '.</span>' +
+            '<span>[' + esc(t.start_time) + '] ' + highlightText(t.title, q) + '</span>' +
+            '<span style="font-size:11px;font-family:var(--monet-typewriter);color:var(--monet-fog);font-weight:normal">(' + t.msg_count + '条)</span>' +
+          '</div>';
+
+        (t.highlights || []).forEach(h => {
+          html += '<div class="monet-quote-box">' +
+            '“<strong>' + esc(h.sender) + '</strong> (' + esc(h.time) + ')：' + highlightText(h.text, q) + '”' +
+          '</div>';
+        });
+
+        if (t.bubbles && t.bubbles.length) {
+          html += '<button class="monet-drawer-toggle" onclick="toggleMonetThread(\'' + tid + '\')">' +
+            (isExp ? '▲ 收起信札原件 (' + t.bubbles.length + '条)' : '▼ 展开信札原件 (' + t.bubbles.length + '条)') +
+          '</button>';
+          if (isExp) {
+            html += '<div style="margin-top:10px;padding:12px;background:rgba(220,226,241,0.2);border:1px dashed var(--monet-hairline);border-radius:6px;max-height:360px;overflow-y:auto">';
+            t.bubbles.forEach(b => {
+              html += '<div style="margin-bottom:8px;font-size:13px;line-height:1.6">' +
+                '<span style="font-family:var(--monet-serif);font-weight:700;color:var(--monet-ink);margin-right:6px">' + esc(b.sender) + ' <small style="color:var(--monet-fog);font-weight:normal">[' + esc(b.time) + ']</small>:</span>' +
+                '<span>' + highlightText(b.text, q) + '</span>' +
+              '</div>';
+            });
+            html += '</div>';
+          }
+        }
+
+        html += '</div>';
+      });
+
+      html += '</div></article>';
+    });
+
+    if (renderedLetters === 0) {
+      html += '<div class="monet-postcard" style="text-align:center;padding:32px;color:var(--monet-fog)">' +
+        '未检索到与「' + esc(state.monetSearchQuery) + '」相关的信札，请尝试其他关键词。' +
+      '</div>';
+    }
+    html += '</section>';
+
+    // 03 · 名册档案 (Galerie des Actifs)
+    const allSpeakers = (k.global_speakers || []).length ? k.global_speakers : (groups[0] ? (groups[0].speakers || []) : []);
+    if (allSpeakers.length && state.monetActiveGroup === '__ALL__') {
+      html += '<section id="monet-sec-members" style="margin-bottom:34px">' +
+        '<div style="display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--monet-line);padding-bottom:8px;margin-bottom:16px">' +
+          '<div style="font-family:var(--monet-serif);font-size:22px;font-weight:700;color:var(--monet-ink)">' +
+            '03 · 名册档案 <span style="font-family:var(--monet-cursive);font-size:19px;font-weight:normal;color:var(--monet-ink-soft);margin-left:8px">Registre & Souvenirs</span>' +
+          '</div>' +
+          '<div style="font-family:var(--monet-typewriter);font-size:11px;color:var(--monet-fog)">MEMBRES ENREGISTRÉS (' + allSpeakers.length + ')</div>' +
+        '</div>' +
+        '<div class="monet-souvenir-grid">';
+      allSpeakers.slice(0, 12).forEach(spk => {
+        html += '<div class="monet-souvenir-card">' +
+          '<div>' +
+            '<div class="monet-souvenir-name">⚜ ' + esc(spk.name) + '</div>' +
+            '<div style="font-family:var(--monet-typewriter);font-size:11px;color:var(--monet-fog)">发言 ' + spk.count + ' 条 ｜ 占比 ' + (spk.pct || 0) + '%</div>' +
+          '</div>' +
+          '<span class="monet-souvenir-tag">' + esc(spk.persona || '活跃群友') + '</span>' +
+        '</div>';
+      });
+      html += '</div></section>';
+    }
+
+    // 04 · 晨昏时序 (Chronologie de la Journée)
+    if (k.hours_24 && k.hours_24.length && state.monetActiveGroup === '__ALL__') {
+      html += '<section id="monet-sec-timeline" style="margin-bottom:24px">' +
+        '<div style="display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--monet-line);padding-bottom:8px;margin-bottom:16px">' +
+          '<div style="font-family:var(--monet-serif);font-size:22px;font-weight:700;color:var(--monet-ink)">' +
+            '04 · 晨昏时序 <span style="font-family:var(--monet-cursive);font-size:19px;font-weight:normal;color:var(--monet-ink-soft);margin-left:8px">Chronologie de la Journée</span>' +
+          '</div>' +
+          '<div style="font-family:var(--monet-typewriter);font-size:11px;color:var(--monet-fog)">RYTHME DIURNE · 24 HEURES</div>' +
+        '</div>' +
+        '<div class="monet-postcard">' +
+          '<div style="font-family:var(--monet-serif);font-size:14.5px;color:var(--monet-ink);margin-bottom:12px">' +
+            '全日话题交谈峰值集中于 <strong>' + (k.peak_hour_str || '高峰时段') + '</strong>，共收录 ' + (k.peak_hour_count || 0) + ' 条消息。' +
+          '</div>' +
+          render24hChart(k.hours_24, k.peak_hour) +
+        '</div>' +
+      '</section>';
+    }
+
+    html += '</div>'; // End monet-main-flow
+
+    // Right Ribbon Bookmarks
+    html += '<aside class="monet-ribbons">' +
+      '<a class="monet-ribbon-btn' + (state.monetActiveGroup === '__ALL__' ? ' active' : '') + '" href="#monet-sec-focus">' +
+        '<span>01 · 重点信笺</span>' +
+        '<div style="font-size:10px;opacity:0.75">AVIS</div>' +
+      '</a>' +
+      '<a class="monet-ribbon-btn" href="#monet-sec-letters">' +
+        '<span>02 · 各群信札</span>' +
+        '<div style="font-size:10px;opacity:0.75">LETTRES</div>' +
+      '</a>' +
+      '<a class="monet-ribbon-btn" href="#monet-sec-members">' +
+        '<span>03 · 名册档案</span>' +
+        '<div style="font-size:10px;opacity:0.75">ARCHIVES</div>' +
+      '</a>' +
+      '<a class="monet-ribbon-btn" href="#monet-sec-timeline">' +
+        '<span>04 · 晨昏时序</span>' +
+        '<div style="font-size:10px;opacity:0.75">TEMPS</div>' +
+      '</a>' +
+    '</aside>';
+
+    html += '</div>' + // End monet-layout
+      '</div>' + // End monet-book-shell
+    '</div>'; // End monet-stage
+
+    return html;
+  }
+
   function renderMarkdownView() {
     return '<div class="section-card">' +
       '<div class="section-head">' +
@@ -2939,6 +3770,8 @@ mark.hl {
       root.innerHTML = renderClaudeView();
       renderClaudeSidebar();
       renderClaudeContent();
+    } else if (state.view === 'monet') {
+      root.innerHTML = renderMonetView();
     } else if (state.view === 'markdown') {
       root.innerHTML = renderMarkdownView();
     } else if (state.view === 'paper') {

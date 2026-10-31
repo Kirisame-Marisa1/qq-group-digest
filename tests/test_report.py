@@ -304,6 +304,10 @@ class TestReport(unittest.TestCase):
         self.assertIn('纸上日报视图', html_out)
         self.assertIn('--claude-terracotta', html_out)
         self.assertIn('claude-artifact', html_out)
+        self.assertIn('莫奈纸雕', html_out)
+        self.assertIn('--monet-ink', html_out)
+        self.assertIn('monet-book-shell', html_out)
+        self.assertIn('monet-ribbons', html_out)
         # 验证 <script> 标签被安全转义为 \u003cscript\u003e，不出现原生恶意脚本闭合
         self.assertNotIn('<script>alert(1)</script>', html_out)
         self.assertIn('\\u003cscript\\u003ealert(1)\\u003c/script\\u003e', html_out)

@@ -62,21 +62,36 @@ CLAUDE_GREEN_HOVER = "#687A50"
 CLAUDE_MUTED_BTN = "#F4F1EA"
 CLAUDE_MUTED_HOVER = "#E8E3DA"
 
+# Monet / Maison des Mots Design System Constants
+MONET_BG = "#F5F3EC"             # Canvas stone / warm background
+MONET_CARD = "#FBF9F4"           # Paper light / parchment
+MONET_CARD_WARM = "#EEF0F5"      # Canvas deep / fog blue tint
+MONET_BORDER = "#BFC8E0"         # Silver blue border
+MONET_BORDER_SUBTLE = "#DCE2F1"  # Mist blue hairline
+MONET_INK = "#1E2748"            # Deep ink blue
+MONET_INK_SOFT = "#46536F"       # Soft ink
+MONET_FOG = "#5C6884"            # Fog
+MONET_LOTUS = "#E8C9D0"          # Lotus pink / rose seal
+MONET_LOTUS_HOVER = "#DCB5BE"
+MONET_LOTUS_SOFT = "#F7EFF1"
+MONET_SILVER_BTN = "#DCE2F1"
+MONET_SILVER_HOVER = "#BFC8E0"
+MONET_SILVER_LIGHT = "#E8EDF8"
+
 
 class ClaudeReaderWindow(ctk.CTkToplevel):
-    """Claude / Anthropic 风格独立沉浸式阅读视窗。
-    遵循 Anthropic 品牌色彩体系、双轨布局与典雅排版。
+    """Claude (Anthropic) / 莫奈纸雕 (Maison des Mots) 双美学风格沉浸式独立阅读视窗。
+    支持实时在 Claude 极简暖调与莫奈洛可可纸雕信笺风格间一键无缝切换。
     """
-    def __init__(self, parent):
+    def __init__(self, parent, initial_theme="claude"):
         super().__init__(parent)
         self.parent = parent
-        self.title("✦ Claude 阅读视窗 · QQ 群聊每日简报")
-        self.geometry("1100x820")
-        self.configure(fg_color=CLAUDE_BG)
+        self.current_theme = initial_theme
+        self.geometry("1120x820")
 
         # Center on screen
         self.update_idletasks()
-        x = max(20, (self.winfo_screenwidth() - 1100) // 2)
+        x = max(20, (self.winfo_screenwidth() - 1120) // 2)
         y = max(20, (self.winfo_screenheight() - 820) // 2)
         self.geometry(f"+{x}+{y}")
 
@@ -90,80 +105,80 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         self.active_group_idx = -1
 
         # 1. Top Navbar
-        nav = ctk.CTkFrame(self, fg_color=CLAUDE_CARD, corner_radius=0, border_color=CLAUDE_BORDER, border_width=1)
-        nav.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.nav = ctk.CTkFrame(self, corner_radius=0, border_width=1)
+        self.nav.grid(row=0, column=0, columnspan=2, sticky="ew")
 
-        left_nav = ctk.CTkFrame(nav, fg_color="transparent")
+        left_nav = ctk.CTkFrame(self.nav, fg_color="transparent")
         left_nav.pack(side="left", padx=16, pady=10)
 
-        ctk.CTkLabel(
+        self.brand_icon = ctk.CTkLabel(
             left_nav,
             text="✦",
             font=ctk.CTkFont(family="Georgia", size=20, weight="bold"),
-            text_color=CLAUDE_TERRACOTTA,
-        ).pack(side="left", padx=(0, 8))
+        )
+        self.brand_icon.pack(side="left", padx=(0, 8))
 
-        ctk.CTkLabel(
+        self.brand_title = ctk.CTkLabel(
             left_nav,
-            text="Claude 阅读视窗",
+            text="阅读视窗",
             font=ctk.CTkFont(family="Georgia", size=17, weight="bold"),
-            text_color=CLAUDE_TEXT,
-        ).pack(side="left", padx=(0, 10))
+        )
+        self.brand_title.pack(side="left", padx=(0, 10))
 
         self.badge_lbl = ctk.CTkLabel(
             left_nav,
-            text="Artifact · 沉浸速读",
+            text="",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=CLAUDE_TERRACOTTA,
-            fg_color=CLAUDE_TERRACOTTA_SOFT,
             corner_radius=6,
             padx=8,
             pady=2,
         )
         self.badge_lbl.pack(side="left")
 
-        right_nav = ctk.CTkFrame(nav, fg_color="transparent")
+        right_nav = ctk.CTkFrame(self.nav, fg_color="transparent")
         right_nav.pack(side="right", padx=16, pady=10)
 
-        tool_style = {
+        self.tool_style = {
             "corner_radius": 7,
             "height": 30,
             "font": ctk.CTkFont(size=12, weight="bold"),
         }
 
-        ctk.CTkButton(
+        # Style Switcher Button
+        self.theme_btn = ctk.CTkButton(
+            right_nav,
+            text="🌸 莫奈纸雕风格",
+            command=self.toggle_theme,
+            border_width=1,
+            **self.tool_style,
+        )
+        self.theme_btn.pack(side="left", padx=5)
+
+        self.browser_btn = ctk.CTkButton(
             right_nav,
             text="🌐 浏览器沉浸视窗",
             command=self.open_in_browser,
-            fg_color=CLAUDE_TERRACOTTA,
-            hover_color=CLAUDE_TERRACOTTA_HOVER,
-            text_color="#FFFFFF",
-            **tool_style,
-        ).pack(side="left", padx=5)
+            **self.tool_style,
+        )
+        self.browser_btn.pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        self.copy_btn = ctk.CTkButton(
             right_nav,
             text="📋 复制当前文本",
             command=self.copy_current_text,
-            fg_color=CLAUDE_MUTED_BTN,
-            hover_color=CLAUDE_MUTED_HOVER,
-            text_color=CLAUDE_TEXT,
-            border_color=CLAUDE_BORDER,
             border_width=1,
-            **tool_style,
-        ).pack(side="left", padx=5)
+            **self.tool_style,
+        )
+        self.copy_btn.pack(side="left", padx=5)
 
-        ctk.CTkButton(
+        self.dir_btn = ctk.CTkButton(
             right_nav,
             text="📁 打开所在目录",
             command=self.open_output_dir,
-            fg_color=CLAUDE_MUTED_BTN,
-            hover_color=CLAUDE_MUTED_HOVER,
-            text_color=CLAUDE_TEXT,
-            border_color=CLAUDE_BORDER,
             border_width=1,
-            **tool_style,
-        ).pack(side="left", padx=5)
+            **self.tool_style,
+        )
+        self.dir_btn.pack(side="left", padx=5)
 
         # 2. Left Sidebar (Navigation Rail)
         self.sidebar = ctk.CTkFrame(
@@ -263,7 +278,120 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         self.reading_box.grid(row=1, column=0, padx=16, pady=16, sticky="nsew")
         self.reading_box.configure(state="disabled")
 
+        self.apply_theme(self.current_theme)
         self.load_latest_report()
+
+    def apply_theme(self, theme_name):
+        self.current_theme = theme_name
+        is_monet = (theme_name == "monet")
+        if is_monet:
+            self.title("🌸 莫奈纸雕视窗 · 字里行间 · QQ 群聊每日简报")
+            self.configure(fg_color=MONET_BG)
+            self.nav.configure(fg_color=MONET_CARD, border_color=MONET_BORDER)
+            self.brand_icon.configure(text="🌸", text_color=MONET_INK)
+            self.brand_title.configure(text="莫奈纸雕视窗 · 字里行间", text_color=MONET_INK)
+            self.badge_lbl.configure(
+                text="🌸 莫奈纸雕 · Maison des Mots",
+                fg_color=MONET_LOTUS,
+                text_color=MONET_INK,
+            )
+            self.theme_btn.configure(
+                text="✨ 切换为 Claude 风格",
+                fg_color=MONET_CARD_WARM,
+                hover_color=MONET_BORDER,
+                text_color=MONET_INK,
+                border_color=MONET_BORDER,
+            )
+            self.browser_btn.configure(
+                fg_color=MONET_INK,
+                hover_color="#2D3A63",
+                text_color="#FFFFFF",
+            )
+            self.copy_btn.configure(
+                fg_color=MONET_CARD_WARM,
+                hover_color=MONET_BORDER,
+                text_color=MONET_INK,
+                border_color=MONET_BORDER,
+            )
+            self.dir_btn.configure(
+                fg_color=MONET_CARD_WARM,
+                hover_color=MONET_BORDER,
+                text_color=MONET_INK,
+                border_color=MONET_BORDER,
+            )
+            self.sidebar.configure(fg_color=MONET_CARD, border_color=MONET_BORDER)
+            self.search_entry.configure(
+                fg_color=MONET_CARD_WARM,
+                border_color=MONET_BORDER,
+                text_color=MONET_INK,
+            )
+            self.canvas_card.configure(fg_color=MONET_CARD, border_color=MONET_BORDER)
+            self.canvas_header.configure(fg_color=MONET_CARD_WARM)
+            self.reading_title.configure(text_color=MONET_INK)
+            self.reading_sub.configure(text_color=MONET_INK_SOFT)
+            self.reading_box.configure(
+                fg_color=MONET_CARD,
+                text_color=MONET_INK,
+                border_color=MONET_BORDER,
+                font=ctk.CTkFont(family="KaiTi", size=13),
+            )
+        else:
+            self.title("✦ Claude 阅读视窗 · QQ 群聊每日简报")
+            self.configure(fg_color=CLAUDE_BG)
+            self.nav.configure(fg_color=CLAUDE_CARD, border_color=CLAUDE_BORDER)
+            self.brand_icon.configure(text="✦", text_color=CLAUDE_TERRACOTTA)
+            self.brand_title.configure(text="Claude 阅读视窗", text_color=CLAUDE_TEXT)
+            self.badge_lbl.configure(
+                text="Artifact · 沉浸速读",
+                fg_color=CLAUDE_TERRACOTTA_SOFT,
+                text_color=CLAUDE_TERRACOTTA,
+            )
+            self.theme_btn.configure(
+                text="🌸 切换为莫奈纸雕",
+                fg_color=MONET_LOTUS,
+                hover_color=MONET_LOTUS_HOVER,
+                text_color=MONET_INK,
+                border_color=MONET_BORDER,
+            )
+            self.browser_btn.configure(
+                fg_color=CLAUDE_TERRACOTTA,
+                hover_color=CLAUDE_TERRACOTTA_HOVER,
+                text_color="#FFFFFF",
+            )
+            self.copy_btn.configure(
+                fg_color=CLAUDE_MUTED_BTN,
+                hover_color=CLAUDE_MUTED_HOVER,
+                text_color=CLAUDE_TEXT,
+                border_color=CLAUDE_BORDER,
+            )
+            self.dir_btn.configure(
+                fg_color=CLAUDE_MUTED_BTN,
+                hover_color=CLAUDE_MUTED_HOVER,
+                text_color=CLAUDE_TEXT,
+                border_color=CLAUDE_BORDER,
+            )
+            self.sidebar.configure(fg_color=CLAUDE_CARD, border_color=CLAUDE_BORDER)
+            self.search_entry.configure(
+                fg_color="#FAF9F5",
+                border_color=CLAUDE_BORDER,
+                text_color=CLAUDE_TEXT,
+            )
+            self.canvas_card.configure(fg_color=CLAUDE_CARD, border_color=CLAUDE_BORDER)
+            self.canvas_header.configure(fg_color=CLAUDE_CARD_WARM)
+            self.reading_title.configure(text_color=CLAUDE_TEXT)
+            self.reading_sub.configure(text_color=CLAUDE_TEXT_SUB)
+            self.reading_box.configure(
+                fg_color="#FDFBF7",
+                text_color=CLAUDE_TEXT,
+                border_color=CLAUDE_BORDER,
+                font=ctk.CTkFont(family="Consolas", size=13),
+            )
+        if self.groups:
+            self.render_group_buttons(self.search_entry.get())
+
+    def toggle_theme(self):
+        new_theme = "claude" if self.current_theme == "monet" else "monet"
+        self.apply_theme(new_theme)
 
     def load_latest_report(self):
         out_dir = self.parent.output_entry.get().replace("\\", "/")
@@ -323,16 +451,24 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         cur_group = None
         cur_lines = []
 
-        grp_re = re.compile(r"^##\s+(\d+)\.\s+(.+?)(?:\s+\((\d+)\))?$")
+        grp_re = re.compile(r"^##\s+(?:(\d+)\.\s+)?(.+?)(?:\s+\((\d+)\))?$")
         for line in lines:
-            m = grp_re.match(line)
+            m = grp_re.match(line.strip())
             if m:
+                name = m.group(2).strip()
+                if any(k in name for k in ["重点速览", "重点通知", "全群总览", "KPI", "概览"]):
+                    if cur_group:
+                        cur_lines.append(line)
+                    else:
+                        preamble.append(line)
+                    continue
                 if cur_group:
                     cur_group["text"] = "\n".join(cur_lines).strip()
                     self.groups.append(cur_group)
+                idx = int(m.group(1)) if m.group(1) else (len(self.groups) + 1)
                 cur_group = {
-                    "idx": int(m.group(1)),
-                    "name": m.group(2).strip(),
+                    "idx": idx,
+                    "name": name,
                     "code": m.group(3) or "",
                     "title": line,
                 }
@@ -354,13 +490,19 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         for w in self.group_scroll.winfo_children():
             w.destroy()
 
+        is_monet = (self.current_theme == "monet")
+        act_bg = MONET_SILVER_LIGHT if is_monet else CLAUDE_CARD_WARM
+        act_fg = MONET_INK if is_monet else CLAUDE_TERRACOTTA
+        norm_fg = MONET_INK if is_monet else CLAUDE_TEXT
+        hov_bg = MONET_CARD_WARM if is_monet else CLAUDE_MUTED_HOVER
+
         btn_all = ctk.CTkButton(
             self.group_scroll,
-            text="🌐 全群宏观总览",
+            text="🌸 全卷信札总览" if is_monet else "🌐 全群宏观总览",
             anchor="w",
-            fg_color=CLAUDE_CARD_WARM if self.active_group_idx == -1 else "transparent",
-            hover_color=CLAUDE_MUTED_HOVER,
-            text_color=CLAUDE_TERRACOTTA if self.active_group_idx == -1 else CLAUDE_TEXT,
+            fg_color=act_bg if self.active_group_idx == -1 else "transparent",
+            hover_color=hov_bg,
+            text_color=act_fg if self.active_group_idx == -1 else norm_fg,
             corner_radius=8,
             height=32,
             font=ctk.CTkFont(size=12, weight="bold" if self.active_group_idx == -1 else "normal"),
@@ -373,13 +515,14 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
             if q and (q not in g["name"].lower() and q not in g["code"] and q not in g["text"].lower()):
                 continue
             is_act = (self.active_group_idx == idx)
+            prefix = "✉️ " if is_monet else ""
             btn = ctk.CTkButton(
                 self.group_scroll,
-                text=f"{g['idx']}. {g['name']}",
+                text=f"{prefix}{g['idx']}. {g['name']}",
                 anchor="w",
-                fg_color=CLAUDE_CARD_WARM if is_act else "transparent",
-                hover_color=CLAUDE_MUTED_HOVER,
-                text_color=CLAUDE_TERRACOTTA if is_act else CLAUDE_TEXT,
+                fg_color=act_bg if is_act else "transparent",
+                hover_color=hov_bg,
+                text_color=act_fg if is_act else norm_fg,
                 corner_radius=8,
                 height=32,
                 font=ctk.CTkFont(size=12, weight="bold" if is_act else "normal"),
@@ -420,14 +563,12 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         self.clipboard_append(t)
         messagebox.showinfo("提示", "已复制到剪贴板！")
 
-    def open_in_browser(self):
+    def open_in_browser(self, view=None):
+        target_view = view or ("monet" if getattr(self, "current_theme", "claude") == "monet" else "claude")
         if self.html_path and os.path.exists(self.html_path):
-            try:
-                os.startfile(os.path.normpath(self.html_path))
-            except Exception as e:
-                messagebox.showwarning("打开失败", f"无法打开浏览器: {e}")
+            self.parent.open_latest_html(path=self.html_path, view=target_view)
         else:
-            self.parent.open_latest_html()
+            self.parent.open_latest_html(view=target_view)
 
     def open_output_dir(self):
         out_dir = self.parent.output_entry.get()
@@ -696,13 +837,22 @@ class QQToolGUI(ctk.CTk):
         ).pack(side="left", padx=6)
         ctk.CTkButton(
             row_a,
-            text="📖 Claude 风格阅读视窗",
+            text="📖 Claude 视窗",
             command=self.open_claude_reader,
             fg_color=CLAUDE_TERRACOTTA,
             hover_color=CLAUDE_TERRACOTTA_HOVER,
             text_color="#FFFFFF",
             **btn_style,
-        ).pack(side="left", padx=8)
+        ).pack(side="left", padx=5)
+        ctk.CTkButton(
+            row_a,
+            text="🌸 莫奈纸雕视窗",
+            command=self.open_monet_reader,
+            fg_color="#46536F",
+            hover_color="#1E2748",
+            text_color="#FFFFFF",
+            **btn_style,
+        ).pack(side="left", padx=5)
         ctk.CTkButton(
             row_a,
             text="🌐 浏览器看板 (HTML)",
@@ -791,9 +941,19 @@ class QQToolGUI(ctk.CTk):
         if self.claude_win and self.claude_win.winfo_exists():
             self.claude_win.lift()
             self.claude_win.focus_force()
+            self.claude_win.apply_theme("claude")
             self.claude_win.load_latest_report()
         else:
-            self.claude_win = ClaudeReaderWindow(self)
+            self.claude_win = ClaudeReaderWindow(self, initial_theme="claude")
+
+    def open_monet_reader(self):
+        if self.claude_win and self.claude_win.winfo_exists():
+            self.claude_win.lift()
+            self.claude_win.focus_force()
+            self.claude_win.apply_theme("monet")
+            self.claude_win.load_latest_report()
+        else:
+            self.claude_win = ClaudeReaderWindow(self, initial_theme="monet")
 
     def open_output_dir_main(self):
         out_dir = self.output_entry.get()
@@ -1155,7 +1315,7 @@ class QQToolGUI(ctk.CTk):
             self.run_command, cmd, "构建索引（最近 %s）" % self.day_label(days)
         )
 
-    def open_latest_html(self, path=None, silent=False):
+    def open_latest_html(self, path=None, silent=False, view=None):
         target = path or self.last_html_path
         out_dir = self.output_entry.get().replace("\\", "/")
         if (not target or not os.path.exists(target)) and os.path.isdir(out_dir):
@@ -1176,12 +1336,19 @@ class QQToolGUI(ctk.CTk):
             return False
         self.last_html_path = target
         try:
+            norm_target = os.path.normpath(target)
             if hasattr(os, "startfile"):
-                os.startfile(os.path.normpath(target))
-            self.log(f"🌐 已在浏览器中打开可视化简报: {target}")
+                os.startfile(norm_target)
+            else:
+                import webbrowser
+                import pathlib
+                webbrowser.open(pathlib.Path(norm_target).as_uri())
+            self.log(f"🌐 已在浏览器中打开可视化简报: {target}" + (f" (视图: {view})" if view else ""))
             return True
         except Exception as e:
             self.log(f"⚠️ 打开 HTML 简报失败: {e}")
+            if not silent:
+                messagebox.showwarning("打开失败", f"无法打开 HTML 简报: {e}")
             return False
 
     def run_report(self):
