@@ -2,7 +2,10 @@ import os
 import re
 import subprocess
 import pytest
-from scripts.ntqq_html import render_html_report
+from scripts.ntqq_html import render_html_report, get_html_template
+import gui.themes as themes
+import gui_app
+
 
 def test_html_monet_script_syntax():
     """验证生成的 HTML 中包含的 JavaScript 在 Node 环境下无任何语法错误。"""
@@ -27,7 +30,6 @@ def test_html_monet_script_syntax():
 
     scripts = re.findall(r'<script.*?>([\s\S]*?)</script>', html)
     assert len(scripts) >= 2
-    # Script 1 is the main logic
     js_content = scripts[1]
     tmp_path = "tmp_check_monet.js"
     with open(tmp_path, "w", encoding="utf-8") as f:
@@ -40,13 +42,33 @@ def test_html_monet_script_syntax():
             os.remove(tmp_path)
 
 
-def test_monet_constants_defined():
-    """验证 gui_app.py 中所有 MONET_ 常量已定义且无丢失。"""
-    import gui_app
-    assert hasattr(gui_app, "MONET_BG")
-    assert hasattr(gui_app, "MONET_CARD")
-    assert hasattr(gui_app, "MONET_BORDER")
-    assert hasattr(gui_app, "MONET_INK")
-    assert hasattr(gui_app, "MONET_LOTUS")
-    assert hasattr(gui_app, "MONET_SILVER_LIGHT")
+def test_html_template_file_integrity():
+    """验证独立外部 HTML 模板文件的完整性与占位符匹配。"""
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "templates",
+        "digest_report.html",
+    )
+    assert os.path.isfile(template_path)
+    assert os.path.getsize(template_path) > 50000
 
+    content = get_html_template()
+    assert "__PAGE_TITLE__" in content
+    assert "__DIGEST_JSON__" in content
+    assert "data-theme" in content
+
+
+def test_monet_constants_defined():
+    """验证 gui_app 与 gui.themes 中所有样式常量定义完备。"""
+    for mod in (gui_app, themes):
+        assert hasattr(mod, "MONET_BG")
+        assert hasattr(mod, "MONET_CARD")
+        assert hasattr(mod, "MONET_BORDER")
+        assert hasattr(mod, "MONET_INK")
+        assert hasattr(mod, "MONET_LOTUS")
+        assert hasattr(mod, "MONET_SILVER_LIGHT")
+        assert hasattr(mod, "CLAUDE_BG")
+        assert hasattr(mod, "CLAUDE_CARD")
+        assert hasattr(mod, "CLAUDE_BORDER")
+        assert hasattr(mod, "CLAUDE_TERRACOTTA")

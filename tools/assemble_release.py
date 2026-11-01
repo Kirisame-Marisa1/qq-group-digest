@@ -6,10 +6,13 @@
 与 config.json 组装至 release_pkg 目录，并打成 gui_app-win64.zip。
 """
 
+import json
 import os
 import shutil
+import site
 import subprocess
 import sys
+import sysconfig
 import zipfile
 import hashlib
 
@@ -22,13 +25,31 @@ if sys.platform == "win32":
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST_DIR = os.path.join(BASE_DIR, "dist", "gui_app")
-BUILD_TMP_PYTHON = os.path.join(BASE_DIR, "build_tmp", "python")
-if not os.path.exists(BUILD_TMP_PYTHON) and os.path.exists(r"C:\Users\LENOVO\Desktop\gui_app-win64\python"):
-    BUILD_TMP_PYTHON = r"C:\Users\LENOVO\Desktop\gui_app-win64\python"
+BUILD_TMP_PYTHON = os.environ.get("BUILD_TMP_PYTHON") or os.path.join(BASE_DIR, "build_tmp", "python")
 RELEASE_PKG = os.path.join(BASE_DIR, "release_pkg")
 OUTPUT_ZIP = os.path.join(BASE_DIR, "gui_app-win64.zip")
 
-SYS_SITE_PACKAGES = r"C:\Users\LENOVO\AppData\Local\Programs\Python\Python311\Lib\site-packages"
+
+def _get_site_packages():
+    env_sp = os.environ.get("SYS_SITE_PACKAGES")
+    if env_sp and os.path.exists(env_sp):
+        return env_sp
+    try:
+        for sp in site.getsitepackages():
+            if os.path.exists(sp):
+                return sp
+    except Exception:
+        pass
+    try:
+        sp = sysconfig.get_path("purelib")
+        if sp and os.path.exists(sp):
+            return sp
+    except Exception:
+        pass
+    return ""
+
+
+SYS_SITE_PACKAGES = _get_site_packages()
 
 REQUIRED_PACKAGES = [
     "pydantic",
@@ -51,14 +72,30 @@ def assemble():
     shutil.copy2(os.path.join(DIST_DIR, "gui_app.exe"), os.path.join(RELEASE_PKG, "gui_app.exe"))
     shutil.copytree(os.path.join(DIST_DIR, "_internal"), os.path.join(RELEASE_PKG, "_internal"))
 
-    print(">>> 3. 复制 scripts、schema 与 config.json...")
+    print(">>> 3. 复制 scripts、gui、schema 与 config.json...")
     shutil.copytree(os.path.join(BASE_DIR, "scripts"), os.path.join(RELEASE_PKG, "scripts"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(os.path.join(BASE_DIR, "gui"), os.path.join(RELEASE_PKG, "gui"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(os.path.join(BASE_DIR, "schema"), os.path.join(RELEASE_PKG, "schema"))
     
     cfg_src = os.path.join(BASE_DIR, "config.example.json")
-    if not os.path.exists(cfg_src):
-        cfg_src = os.path.join(BASE_DIR, "config.json")
-    shutil.copy2(cfg_src, os.path.join(RELEASE_PKG, "config.json"))
+    if os.path.exists(cfg_src):
+        shutil.copy2(cfg_src, os.path.join(RELEASE_PKG, "config.json"))
+    else:
+        sanitized = {
+            "root": "D:/QQChatCache",
+            "account": "YOUR_QQ",
+            "qq_data_dir": "C:/Users/YOUR_NAME/Documents/Tencent Files",
+            "qq_exe": "C:/Program Files/Tencent/QQNT/QQ.exe",
+            "index_days": 30,
+            "decrypt": ["nt_msg.db", "group_info.db", "profile_info.db"],
+            "class_groups": [],
+            "class_group_names": {},
+            "glossary_autoupdate": True,
+            "include_c2c": False,
+            "clean_plain_after_build": False,
+        }
+        with open(os.path.join(RELEASE_PKG, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(sanitized, f, indent=2, ensure_ascii=False)
 
     print(">>> 4. 复制并扩展嵌入式 Python 运行时...")
     target_python = os.path.join(RELEASE_PKG, "python")

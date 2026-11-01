@@ -1,0 +1,64 @@
+name: CI & PR Quality Gate
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test:
+    name: Test & Privacy Audit (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+        pip install pytest pytest-cov customtkinter psutil
+
+    - name: Privacy Guard Check
+      run: |
+        python -c "
+        import os, re, sys
+        user_path_pattern = re.compile(r'C:\\\\Users\\\\(?!Public|runneradmin|Default|All Users)[a-zA-Z0-9_\-]+', re.IGNORECASE)
+        leaks = []
+        for root, dirs, files in os.walk('.'):
+            dirs[:] = [d for d in dirs if d not in ['.git', 'build', 'dist', '__pycache__', '.pytest_cache', '.agents', 'release_pkg']]
+            for f in files:
+                if f.endswith(('.py', '.json', '.spec', '.md', '.yml', '.yaml')):
+                    path = os.path.join(root, f)
+                    if os.path.basename(path) == 'config.json':
+                        continue  # local gitignored file
+                    try:
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as fp:
+                            for lno, line in enumerate(fp, 1):
+                                if user_path_pattern.search(line):
+                                    leaks.append(f'{path}:{lno}: contains hardcoded local user path')
+                    except Exception:
+                        pass
+        if leaks:
+            print('Privacy Guard: Detected sensitive local paths:')
+            for leak in leaks:
+                print('  - ' + leak)
+            sys.exit(1)
+        print('Privacy Guard: All files clean and free of private identifiers.')
+        "
+
+    - name: Run Test Suite
+      run: |
+        pytest -v
