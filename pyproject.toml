@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qq-group-digest"
-version = "0.3.0"
+version = "1.5.1"
 description = "把 QQ 群聊与私聊变成可检索、可统计、可总结的本地资料库（全程本地、只读、不登录）"
 readme = "README.md"
 license = { file = "LICENSE" }
