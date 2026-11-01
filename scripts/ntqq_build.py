@@ -9,6 +9,7 @@
 """
 import argparse, json, os, sqlite3, sys, time
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (sync_fts_incremental, load_config, validate_config, load_schema, find_schema, ensure_dirs,
                        ensure_keymap, ensure_plain, cleanup_plain, unwrap_key_hex, open_ro,
@@ -174,6 +175,49 @@ def clean_plain_dbs(cfg):
         log('[clean] 已自动清理 %d 个明文数据库缓存文件' % removed)
 
 
+def _prepare_decrypted_sources(cfg: dict, km: str, a: argparse.Namespace, stream: bool, snap: bool) -> None:
+    """按需或并发解密配置中指定的辅助数据库与主库。"""
+    decrypt_targets = [
+        name for name in cfg.get('decrypt', [])
+        if not (stream and name == 'nt_msg.db') and not (snap and name == 'nt_msg.db')
+    ]
+    if len(decrypt_targets) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        log('[decrypt] 并发解密: %s' % ', '.join(decrypt_targets))
+        with ThreadPoolExecutor(max_workers=min(3, len(decrypt_targets))) as executor:
+            futures = [executor.submit(ensure_plain, cfg, km, name, force=a.force) for name in decrypt_targets]
+            for fut in futures:
+                fut.result()
+    else:
+        for name in decrypt_targets:
+            log('[decrypt] %s' % name)
+            ensure_plain(cfg, km, name, force=a.force)
+    if snap and not os.path.exists(os.path.join(PLAIN, 'nt_msg.db')):
+        raise SystemExit('--source snap 需要先跑 ntqq_snapshot.py 生成 data/plain/nt_msg.db')
+
+
+def _calculate_incremental_window(idx, days: Optional[int], cut: int, day0: int, a: argparse.Namespace,
+                                  stream: bool, codes_count: int, wlabel: str) -> Tuple[int, bool]:
+    """计算增量扫描的起始时间戳与是否启用增量模式。"""
+    prev_cutoff = int(_meta_get(idx, 'cutoff_ts', '0') or 0)
+    prev_day0 = int(_meta_get(idx, 'window_day0', '0') or 0)
+    scan_day0 = day0
+    is_incremental = False
+    if not stream and days and not a.rebuild and not a.only_groups and prev_cutoff > cut and 0 < prev_day0 <= day0:
+        cand_day0 = int(datetime.fromtimestamp(max(cut, prev_cutoff - 86400), TZ)
+                        .replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        if cand_day0 > day0:
+            scan_day0 = cand_day0
+            is_incremental = True
+            saved_days = (scan_day0 - day0) // 86400
+            log('[index] 增量模式：候选群 %d 个，从 %s 起扫描（复用已有索引，跳过前 %d 天；--rebuild 可强制全量）'
+                % (codes_count, fmt(scan_day0, '%Y-%m-%d'), saved_days))
+    if not is_incremental:
+        log('[index] 候选群 %d 个 | 挡位：%s%s'
+            % (codes_count, wlabel, ('（>= %s）' % fmt(day0, '%Y-%m-%d')) if days else ''))
+    return scan_day0, is_incremental
+
+
 def build_once(a):
     t0 = time.time()
     cfg = load_config()
@@ -213,23 +257,7 @@ def build_once(a):
     src_mode = getattr(a, 'source', 'sql') or 'sql'
     stream = (src_mode == 'stream')
     snap = (src_mode == 'snap')
-    decrypt_targets = [
-        name for name in cfg['decrypt']
-        if not (stream and name == 'nt_msg.db') and not (snap and name == 'nt_msg.db')
-    ]
-    if len(decrypt_targets) > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        log('[decrypt] 并发解密: %s' % ', '.join(decrypt_targets))
-        with ThreadPoolExecutor(max_workers=min(3, len(decrypt_targets))) as executor:
-            futures = [executor.submit(ensure_plain, cfg, km, name, force=a.force) for name in decrypt_targets]
-            for fut in futures:
-                fut.result()
-    else:
-        for name in decrypt_targets:
-            log('[decrypt] %s' % name)
-            ensure_plain(cfg, km, name, force=a.force)
-    if snap and not os.path.exists(os.path.join(PLAIN, 'nt_msg.db')):
-        raise SystemExit('--source snap 需要先跑 ntqq_snapshot.py 生成 data/plain/nt_msg.db')
+    _prepare_decrypted_sources(cfg, km, a, stream=stream, snap=snap)
     log('[source] 取数方案：%s' % ('按需解密（--source stream，备选；nt_msg.db 不落盘）' if stream
                                   else ('一致快照（--source snap，来自 ntqq_snapshot.py）' if snap
                                         else '全盘解密（--source sql，默认；明文库建完索引后删除）')))
@@ -335,23 +363,10 @@ def build_once(a):
         idx.commit()
 
     # ── 增量索引判定 ──────────────────────────────────────────────────────────
+    scan_day0, is_incremental = _calculate_incremental_window(
+        idx, days, cut, day0, a, stream=stream, codes_count=len(codes), wlabel=wlabel
+    )
     prev_cutoff = int(_meta_get(idx, 'cutoff_ts', '0') or 0)
-    prev_day0 = int(_meta_get(idx, 'window_day0', '0') or 0)
-    scan_day0 = day0
-    is_incremental = False
-    if not stream and days and not a.rebuild and not a.only_groups and prev_cutoff > cut and 0 < prev_day0 <= day0:
-        # 回退 1 天（86400s）以覆盖跨午夜或延迟落盘的同日消息
-        cand_day0 = int(datetime.fromtimestamp(max(cut, prev_cutoff - 86400), TZ)
-                        .replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-        if cand_day0 > day0:
-            scan_day0 = cand_day0
-            is_incremental = True
-            saved_days = (scan_day0 - day0) // 86400
-            log('[index] 增量模式：候选群 %d 个，从 %s 起扫描（复用已有索引，跳过前 %d 天；--rebuild 可强制全量）'
-                % (len(codes), fmt(scan_day0, '%Y-%m-%d'), saved_days))
-    if not is_incremental:
-        log('[index] 候选群 %d 个 | 挡位：%s%s'
-            % (len(codes), wlabel, ('（>= %s）' % fmt(day0, '%Y-%m-%d')) if days else ''))
 
     I = {k: i + 1 for i, k in enumerate(KEYS)}
     G = dict(G)

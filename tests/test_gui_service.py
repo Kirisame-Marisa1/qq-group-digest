@@ -105,3 +105,16 @@ def test_format_empty_database_summary():
     assert "尚无消息记录" in QQGuiService.format_database_summary({"total_msgs": 0})
     assert "尚无消息记录" in QQGuiService.format_database_summary({})
 
+
+def test_detect_running_qq_ctypes_fallback(monkeypatch):
+    """验证当 psutil 不可用时，detect_running_qq 能安全走 ctypes 降级分支而不报错。"""
+    import gui.service as svc
+    monkeypatch.setattr(svc, "_HAS_PSUTIL", False)
+    monkeypatch.setattr(svc, "psutil", None)
+
+    qq_exe, candidates = QQGuiService.detect_running_qq()
+    assert isinstance(candidates, list)
+    if qq_exe is not None:
+        assert isinstance(qq_exe, str)
+        assert len(qq_exe) > 0
+

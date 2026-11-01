@@ -48,11 +48,16 @@ ntqq-media = "ntqq_media:main"
 ntqq-glossary = "ntqq_glossary:main"
 ntqq-group-state = "ntqq_group_state:main"
 ntqq-slice = "ntqq_slice:main"
+ntqq-gui = "gui_app:main"
 
 [tool.setuptools]
-package-dir = {"" = "scripts"}
+package-dir = {"" = "scripts", "gui" = "gui"}
+packages = ["gui"]
 py-modules = [
+    "gui_app",
     "ntqq_core",
+    "ntqq_crypto",
+    "ntqq_db",
     "ntqq_init",
     "ntqq_build",
     "ntqq_report",

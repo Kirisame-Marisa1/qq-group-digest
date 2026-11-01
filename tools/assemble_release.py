@@ -139,6 +139,8 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
 
     print(">>> 6. 验证各个演进模块脚本在独立运行时下的可执行性...")
     test_scripts = [
+        "ntqq_crypto.py",
+        "ntqq_db.py",
         "ntqq_snapshot.py",
         "ntqq_parser.py",
         "ntqq_vision_filter.py",

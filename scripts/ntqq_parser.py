@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """细粒度 Protobuf 消息载荷解析器与容错降级引擎 (MessageParser)。
@@ -105,6 +106,144 @@ def _decode_str(v: Any) -> str:
             except Exception:
                 return ""
     return str(v) if v is not None else ""
+
+_s = _decode_str
+
+# 45002 = 消息段内容类型
+CT_KIND = {
+    1: 'text', 2: 'image', 3: 'file', 4: 'audio', 5: 'video',
+    6: 'sticker', 7: 'reply', 8: 'system', 10: 'other', 16: 'forward'
+}
+FWD_FIELD = '40900'
+
+
+def classify(ct: Optional[int], f: Dict[int, List[Any]], sc: Optional[dict] = None) -> str:
+    """按 45002 判定类型；缺失时用结构字段兜底。"""
+    k = CT_KIND.get(ct or 0)
+    if k == 'file':
+        name = (_decode_str(f.get(45402, [b''])[0]) + _decode_str(f.get(45419, [b''])[0])).lower()
+        if name.endswith(('.mp4', '.mov', '.mkv', '.avi', '.wmv', '.flv', '.m4v')):
+            return 'video'
+        return 'file'
+    if k:
+        return k
+    # ct 缺失/未知 -> 结构兜底
+    if 45101 in f:
+        return 'text'
+    if 45402 in f or 45405 in f:
+        return 'file'
+    if 45526 in f or 45802 in f:
+        return 'image'
+    if 47601 in f or 47602 in f:
+        return 'sticker'
+    if 47402 in f or 47403 in f or 47413 in f:
+        return 'reply'
+    if 48601 in f or 48602 in f:
+        return 'forward'
+    if 48210 in f or 48501 in f or 48503 in f or 80900 in f:
+        return 'system'
+    if 48151 in f or 48153 in f:
+        return 'call'
+    return 'other'
+
+
+def forward_text(f: Dict[int, List[Any]], sc: dict) -> Tuple[str, str]:
+    """从转发子记录里取出正文与类型。"""
+    B = sc.get('body_40800', {})
+    parts: List[str] = []
+    kinds: List[str] = []
+    for seg in f.get(40800, []):
+        try:
+            s: Dict[int, List[Any]] = {}
+            for a, b, c in pb_fields(seg):
+                s.setdefault(a, []).append(c)
+        except Exception:
+            continue
+        ct = s.get(B.get('content_type', 45002), [0])[0]
+        t = _decode_str(s.get(B.get('text', 45101), [b''])[0]).strip()
+        if not t:
+            for key in ('sys_content', 'reply_summary', 'video_text', 'call_desc', 'filename'):
+                tag_no = B.get(key)
+                if tag_no and tag_no in s:
+                    cand = _decode_str(s[tag_no][0]).strip()
+                    if cand:
+                        t = cand
+                        break
+        k = classify(ct, s, sc)
+        if k != 'reply':
+            kinds.append(k)
+        if t:
+            parts.append(t)
+    if not parts:
+        for seg in f.get(40800, []):
+            try:
+                s_fb: Dict[int, List[Any]] = {}
+                for a, b, c in pb_fields(seg):
+                    s_fb.setdefault(a, []).append(c)
+            except Exception:
+                continue
+            rep_tag = B.get('reply_summary', 47413)
+            if rep_tag in s_fb:
+                t = _decode_str(s_fb[rep_tag][0]).strip()
+                if t:
+                    parts.append('引用: ' + t)
+                    break
+    txt = ' | '.join(parts).strip()
+    for pref in ('text', 'forward', 'file', 'video', 'image', 'sticker', 'audio', 'call', 'system'):
+        if pref in kinds:
+            return pref, txt
+    return (kinds[0] if kinds else 'other'), txt
+
+
+def decode_forward(blob: Optional[bytes], sc: dict, limit: int = 60) -> List[Dict[str, Any]]:
+    """展开 40900 合并转发消息内容。"""
+    if not blob:
+        return []
+    out: List[Dict[str, Any]] = []
+    try:
+        for n, w, v in pb_fields(blob):
+            if n != 40900 or w != 2:
+                continue
+            try:
+                f: Dict[int, List[Any]] = {}
+                for a, b, c in pb_fields(v):
+                    f.setdefault(a, []).append(c)
+            except Exception:
+                continue
+            kind, text = forward_text(f, sc)
+            out.append({
+                'uid': _decode_str(f.get(40020, [b''])[0]),
+                'qq': f.get(40033, [0])[0],
+                'ts': f.get(40050, [0])[0],
+                'kind': kind,
+                'text': text,
+                'name': (_decode_str(f.get(40094, [b''])[0]) or _decode_str(f.get(40093, [b''])[0])
+                         or _decode_str(f.get(40090, [b''])[0])),
+            })
+            if len(out) >= limit:
+                break
+    except Exception:
+        pass
+    return out
+
+
+TZ = timezone(timedelta(hours=8))
+
+
+def format_forward(items: List[Dict[str, Any]], per_line: int = 400) -> str:
+    """把转发内容排成可读文本。"""
+    if not items:
+        return ''
+    lines = ['[转发聊天记录 %d 条]' % len(items)]
+    for m in items:
+        t = (m.get('text') or '').replace('\n', ' ')
+        if len(t) > per_line:
+            t = t[:per_line] + '…'
+        who = m.get('name') or (('QQ%d' % m['qq']) if m.get('qq') else (m.get('uid', '')[:10] or '?'))
+        ts = m.get('ts') or 0
+        when = ('[' + datetime.fromtimestamp(ts, TZ).strftime('%Y-%m-%d %H:%M') + '] ') if ts and ts > 1e9 else ''
+        lines.append('  %s%s: %s' % (when, who, t))
+    return '\n'.join(lines)
 
 
 # 常见卡片/分享关键词与正则

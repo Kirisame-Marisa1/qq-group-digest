@@ -12,7 +12,13 @@ import sqlite3
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
-import psutil
+
+try:
+    import psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    psutil = None
+    _HAS_PSUTIL = False
 
 from gui.themes import CONFIG_PATH, DEFAULT_WORKSPACE, FROZEN, SCRIPTS_DIR
 
@@ -79,6 +85,62 @@ class QQGuiService:
         return candidates
 
     @staticmethod
+    def _detect_qq_exe_ctypes() -> Optional[str]:
+        """Fallback to Windows Toolhelp32 API when psutil is unavailable."""
+        if sys.platform != "win32":
+            return None
+        import ctypes
+        import ctypes.wintypes as wt
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ('dwSize', wt.DWORD),
+                ('cntUsage', wt.DWORD),
+                ('th32ProcessID', wt.DWORD),
+                ('th32DefaultHeapID', ctypes.POINTER(ctypes.c_ulong)),
+                ('th32ModuleID', wt.DWORD),
+                ('cntThreads', wt.DWORD),
+                ('th32ParentProcessID', wt.DWORD),
+                ('pcPriClassBase', ctypes.c_long),
+                ('dwFlags', wt.DWORD),
+                ('szExeFile', ctypes.c_char * 260),
+            ]
+
+        snap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap in (ctypes.c_void_p(-1).value, -1, 0):
+            return None
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        qq_pid = None
+        if ctypes.windll.kernel32.Process32First(snap, ctypes.byref(pe)):
+            while True:
+                exe_name = pe.szExeFile.decode('utf-8', 'replace').lower()
+                if exe_name == 'qq.exe':
+                    qq_pid = pe.th32ProcessID
+                    break
+                if not ctypes.windll.kernel32.Process32Next(snap, ctypes.byref(pe)):
+                    break
+        ctypes.windll.kernel32.CloseHandle(snap)
+
+        if not qq_pid:
+            return None
+
+        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, qq_pid)
+        if not h_proc:
+            return "QQ.exe"
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wt.DWORD(len(buf))
+            if ctypes.windll.kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+                return buf.value
+            return "QQ.exe"
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h_proc)
+
+    @staticmethod
     def detect_running_qq() -> Tuple[Optional[str], List[Tuple[float, str, str]]]:
         """Detect running QQ.exe process and matching data directory candidates.
 
@@ -86,15 +148,18 @@ class QQGuiService:
             Tuple of (qq_exe_path, list of (mtime, qq_number, data_dir))
         """
         qq_exe = None
-        for proc in psutil.process_iter(["name", "exe"]):
-            try:
-                name = proc.info.get("name")
-                exe = proc.info.get("exe")
-                if name and name.lower() == "qq.exe" and exe:
-                    qq_exe = exe
-                    break
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        if _HAS_PSUTIL and psutil is not None:
+            for proc in psutil.process_iter(["name", "exe"]):
+                try:
+                    name = proc.info.get("name")
+                    exe = proc.info.get("exe")
+                    if name and name.lower() == "qq.exe" and exe:
+                        qq_exe = exe
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        else:
+            qq_exe = QQGuiService._detect_qq_exe_ctypes()
 
         matched_candidates = []
         if qq_exe:
