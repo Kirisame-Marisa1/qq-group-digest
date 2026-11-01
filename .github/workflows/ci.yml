@@ -28,8 +28,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e .
-        pip install pytest pytest-cov customtkinter psutil
+        pip install -e ".[dev,gui]"
 
     - name: Privacy Guard Check
       run: |
