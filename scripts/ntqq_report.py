@@ -1068,26 +1068,47 @@ def main():
                 if a.class_mode:
                     out.append('> 上表只列「重要度 >= 2」的消息；下面是逐群详述。')
                     out.append('')
-        for nconv, ntot, code, name, rows, prev in prepared:
+        def _render_single_group(item):
+            nconv, ntot, code, name, rows, prev = item
             disp_name = code_label(code) if a.anonymize else name
             if getattr(a, 'structured', False):
                 from ntqq_segmenter import ConversationSegmenter
                 from ntqq_report_schema import build_structured_report, render_markdown
-                from ntqq_summary_tree import build_and_save_micro_digests
                 segmenter = ConversationSegmenter()
                 clusters = segmenter.segment_messages(rows)
-                try:
-                    build_and_save_micro_digests(idx, clusters)
-                except Exception as e:
-                    log_debug('保存 micro_digests 异常: %s' % e)
                 rep = build_structured_report(rows, clusters, disp_name or f"群_{code}", code)
-                out.append(render_markdown(rep))
+                txt = render_markdown(rep)
+                extra = clusters
             else:
                 txt, _ = block(code, disp_name, rows, a.max_msgs, a.show_media, prev, a.brief, anon=ANON.get(code))
-                out.append(txt)
-            result['groups'].append({'code': code_label(code) if a.anonymize else code,
-                                     'name': disp_name, 'conv': nconv, 'n': ntot,
-                                     'first': min(r['ts'] for r in rows), 'last': max(r['ts'] for r in rows)})
+                extra = None
+            g_meta = {
+                'code': code_label(code) if a.anonymize else code,
+                'name': disp_name,
+                'conv': nconv,
+                'n': ntot,
+                'first': min(r['ts'] for r in rows),
+                'last': max(r['ts'] for r in rows),
+            }
+            return (txt, g_meta, extra)
+
+        if len(prepared) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            workers = min(8, os.cpu_count() or 4)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                rendered_groups = list(executor.map(_render_single_group, prepared))
+        else:
+            rendered_groups = [_render_single_group(item) for item in prepared]
+
+        for txt, g_meta, extra in rendered_groups:
+            out.append(txt)
+            result['groups'].append(g_meta)
+            if extra is not None and getattr(a, 'structured', False):
+                try:
+                    from ntqq_summary_tree import build_and_save_micro_digests
+                    build_and_save_micro_digests(idx, extra)
+                except Exception as e:
+                    log_debug('保存 micro_digests 异常: %s' % e)
 
     text = '\n'.join(out)
     if a.anonymize:

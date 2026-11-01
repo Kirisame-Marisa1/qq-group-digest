@@ -1169,7 +1169,7 @@ def run_index_migrations(con):
 
 
 def rebuild_fts(con):
-    """同步重建 messages_fts 全文索引（外部内容表，毫秒级完成）。"""
+    """同步重建 messages_fts 全文索引。"""
     try:
         con.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
         con.commit()
@@ -1177,9 +1177,27 @@ def rebuild_fts(con):
         log_debug('FTS5 rebuild 跳过: %s' % e)
 
 
+def sync_fts_incremental(con, rows):
+    """增量同步 FTS5 虚拟表，避免全表盲目全量重建。"""
+    fts_data = [(r[0], r[13]) for r in rows if len(r) > 13 and r[13]]
+    if fts_data:
+        try:
+            con.executemany("INSERT OR REPLACE INTO messages_fts(rowid, text) VALUES (?, ?)", fts_data)
+        except sqlite3.DatabaseError as e:
+            log_debug('FTS5 增量同步异常: %s' % e)
+
+
 def open_index():
     ensure_dirs()
     con = sqlite3.connect(INDEX_DB)
+    try:
+        con.execute("PRAGMA journal_mode = WAL;")
+        con.execute("PRAGMA synchronous = NORMAL;")
+        con.execute("PRAGMA cache_size = -64000;")     # 64MB 内存页缓存
+        con.execute("PRAGMA temp_store = MEMORY;")     # 临时表与排序走内存
+        con.execute("PRAGMA mmap_size = 268435456;")   # 256MB 内存映射 I/O
+    except sqlite3.DatabaseError as e:
+        log_debug('SQLite PRAGMA 设置跳过: %s' % e)
     con.executescript(INDEX_SCHEMA)
     run_index_migrations(con)
     return con

@@ -10,7 +10,7 @@
 import argparse, json, os, sqlite3, sys, time
 from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import (load_config, validate_config, load_schema, find_schema, ensure_dirs,
+from ntqq_core import (sync_fts_incremental, load_config, validate_config, load_schema, find_schema, ensure_dirs,
                        ensure_keymap, ensure_plain, cleanup_plain, unwrap_key_hex, open_ro,
                        build_names, open_index, decode_body, decode_forward, format_forward,
                        pb_fields, rebuild_fts, src_db, now_ts, local, fmt,
@@ -44,6 +44,7 @@ def flush_buf(idx, buf, normalizer=None):
             log_debug('复读折叠异常: %s' % e)
             rows = buf
     idx.executemany('INSERT OR REPLACE INTO messages VALUES (%s)' % ','.join('?' * 16), rows)
+    sync_fts_incremental(idx, rows)
     buf.clear()
 
 KEYS = ['seq', 'direction', 'sender_uid', 'group_code_str', 'group_key',
@@ -212,13 +213,21 @@ def build_once(a):
     src_mode = getattr(a, 'source', 'sql') or 'sql'
     stream = (src_mode == 'stream')
     snap = (src_mode == 'snap')
-    for name in cfg['decrypt']:
-        if stream and name == 'nt_msg.db':
-            continue          # 主库不落地：按需解密直接抽行
-        if snap and name == 'nt_msg.db':
-            continue          # 主库由 ntqq_snapshot.py 提供，**绝不在这里重解密**
-        log('[decrypt] %s' % name)
-        ensure_plain(cfg, km, name, force=a.force)
+    decrypt_targets = [
+        name for name in cfg['decrypt']
+        if not (stream and name == 'nt_msg.db') and not (snap and name == 'nt_msg.db')
+    ]
+    if len(decrypt_targets) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        log('[decrypt] 并发解密: %s' % ', '.join(decrypt_targets))
+        with ThreadPoolExecutor(max_workers=min(3, len(decrypt_targets))) as executor:
+            futures = [executor.submit(ensure_plain, cfg, km, name, force=a.force) for name in decrypt_targets]
+            for fut in futures:
+                fut.result()
+    else:
+        for name in decrypt_targets:
+            log('[decrypt] %s' % name)
+            ensure_plain(cfg, km, name, force=a.force)
     if snap and not os.path.exists(os.path.join(PLAIN, 'nt_msg.db')):
         raise SystemExit('--source snap 需要先跑 ntqq_snapshot.py 生成 data/plain/nt_msg.db')
     log('[source] 取数方案：%s' % ('按需解密（--source stream，备选；nt_msg.db 不落盘）' if stream
@@ -666,7 +675,8 @@ def build_once(a):
                  ('bad_days', json.dumps(bad_days[:50], ensure_ascii=False))):
         idx.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (k, v))
     idx.commit()
-    rebuild_fts(idx)
+    if a.rebuild:
+        rebuild_fts(idx)
 
     tot = idx.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
     grp = idx.execute('SELECT COUNT(*) FROM groups').fetchone()[0]

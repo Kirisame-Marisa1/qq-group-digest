@@ -66,22 +66,31 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
         t0 = time.time()
         with open(actual_src, 'rb') as fi, open(out_path, 'wb') as fo:
             fi.seek(EXT_HEADER)
-            for i in range(pages):
-                raw = fi.read(PAGE_SIZE)
-                if len(raw) < PAGE_SIZE:
+            CHUNK_PAGES = 32  # 128KB 批量缓冲区
+            i = 0
+            while i < pages:
+                batch_pages = min(CHUNK_PAGES, pages - i)
+                chunk = fi.read(batch_pages * PAGE_SIZE)
+                if not chunk:
                     break
-                if i == 0:
-                    pt = plain(raw[SALT_SIZE:], key_bytes)          # pt[0:16] 就是原始 SQLite 头
-                    page = bytes(b'SQLite format 3\x00' + pt)
-                else:
-                    page = plain(raw, key_bytes)
-                if len(page) < PAGE_SIZE:
-                    page += b'\x00' * (PAGE_SIZE - len(page))
-                fo.write(page)
-                if (i & 8191) == 0 or i + 1 >= pages:
+                n_got = len(chunk) // PAGE_SIZE
+                out_chunk = bytearray()
+                for p_idx in range(n_got):
+                    curr_p = i + p_idx
+                    raw = chunk[p_idx * PAGE_SIZE : (p_idx + 1) * PAGE_SIZE]
+                    if curr_p == 0:
+                        pt = plain(raw[SALT_SIZE:], key_bytes)
+                        page = bytes(b'SQLite format 3\x00' + pt)
+                    else:
+                        page = plain(raw, key_bytes)
+                    if len(page) < PAGE_SIZE:
+                        page += b'\x00' * (PAGE_SIZE - len(page))
+                    out_chunk.extend(page)
+                fo.write(out_chunk)
+                i += n_got
+                if (i & 8191) < CHUNK_PAGES or i >= pages:
                     print('@@PROGRESS|{"stage":"decrypt","file":"%s","done":%d,"total":%d,"pct":%.1f}'
-                          % (db_name, i + 1, pages, (i + 1) * 100.0 / max(1, pages)), flush=True)
-
+                          % (db_name, min(i, pages), pages, min(i, pages) * 100.0 / max(1, pages)), flush=True)
     sz = os.path.getsize(out_path)
     log('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
     with open(out_path, 'rb') as f:
