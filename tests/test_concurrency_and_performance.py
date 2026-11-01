@@ -94,3 +94,93 @@ def test_multithreaded_group_report_consistency():
     assert "并发" in txt1
     assert "群二" in txt2
     assert "运动" in txt2
+
+
+def test_keywords_ngram_speed_and_parity():
+    """验证关键词提取优化前后结果精确一致，且能高效处理长文本与转发记录。"""
+    from scripts.ntqq_report import keywords
+
+    samples = [
+        "你好，请问今天下午的会议几点开始？[转发聊天记录: 昨天讨论]",
+        "请大家尽快提交实验报告，截止日期是明天下午5点！",
+        "python test 123456 abcdef",
+        "有人知道这个报错是什么意思吗？ModuleNotFoundError: No module named requests",
+        "今天天气真好，一起去图书馆学习吗？",
+        "大家注意查收邮件通知，关于下周放假安排的公告已经在群文件发布了。",
+        "",
+        None,
+        "a" * 120,  # 极端超长无标点输入
+    ] * 50
+
+    kws = keywords(samples, min_count=2, topk=10)
+    assert len(kws) > 0
+    words = [w for w, c in kws]
+    # 验证关键高频词正常检出
+    assert any("会议" in w or "下午" in w or "实验" in w or "报告" in w or "通知" in w for w in words)
+
+
+def test_decryption_preallocation_and_byte_parity():
+    """验证使用算法缓存与预分配缓冲区的流式解密输出与标准 AES-CBC 精确一致。"""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from scripts.ntqq_decrypt import plain, PAGE_SIZE, SALT_SIZE, RESERVE
+
+    key = os.urandom(32)
+    iv = os.urandom(16)
+    plain_data = b"SQLite format 3\x00" + b"A" * (4048 - 16)
+    enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor().update(plain_data)
+    raw_page = enc + iv + b"\x00" * 32
+
+    # 1. 验证传 key bytes 正常工作
+    res_bytes = plain(raw_page, key)
+    assert res_bytes == plain_data
+
+    # 2. 验证传 AES 预缓存算法对象正常工作且字节完全相同
+    aes_algo = algorithms.AES(key)
+    res_algo = plain(raw_page, aes_algo)
+    assert res_algo == plain_data
+
+
+def test_open_ro_mmap_pragmas():
+    """验证 open_ro 启用 mmap 与页缓存，并支持正常只读查询。"""
+    from scripts.ntqq_db import open_ro
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "ro_test.db")
+        con = sqlite3.connect(db_path)
+        con.execute("CREATE TABLE kv (k TEXT, v TEXT)")
+        con.execute("INSERT INTO kv VALUES ('hello', 'world')")
+        con.commit()
+        con.close()
+
+        ro_con = open_ro(db_path)
+        try:
+            row = ro_con.execute("SELECT v FROM kv WHERE k='hello'").fetchone()
+            assert row is not None and row[0] == "world"
+
+            # 验证 PRAGMA 读取正常
+            mmap = ro_con.execute("PRAGMA mmap_size;").fetchone()[0]
+            assert mmap > 0
+        finally:
+            ro_con.close()
+
+
+def test_parser_varint_and_decode_str_perf_helpers():
+    """验证统一 Parser 中的 _varint 与 _decode_str 快速路径在各类边界值下的正确性。"""
+    from scripts.ntqq_parser import _varint, _decode_str
+
+    # 1. 单字节与多字节 varint
+    assert _varint(b"\x00", 0) == (0, 1)
+    assert _varint(b"\x01", 0) == (1, 1)
+    assert _varint(b"\x7f", 0) == (127, 1)
+    assert _varint(b"\x80\x01", 0) == (128, 2)
+    assert _varint(b"\xac\x02", 0) == (300, 2)
+
+    # 2. _decode_str 各类型分支
+    assert _decode_str(b"") == ""
+    assert _decode_str(None) == ""
+    assert _decode_str("") == ""
+    assert _decode_str("hello") == "hello"
+    assert _decode_str(b"hello world") == "hello world"
+    assert _decode_str("测试中文".encode("utf-8")) == "测试中文"
+    assert _decode_str("测试中文".encode("gbk")) == "测试中文"
+

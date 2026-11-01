@@ -1,4 +1,3 @@
-from datetime import datetime, timezone, timedelta
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """细粒度 Protobuf 消息载荷解析器与容错降级引擎 (MessageParser)。
@@ -9,6 +8,8 @@ from datetime import datetime, timezone, timedelta
 3. 容错降级策略 (Fallback)：当遭遇非预期 Protobuf wire type 或字节损坏时，
    自动平滑降级提取可见 UTF-8 文本块，防止单条畸形消息阻断索引批次。
 """
+
+from datetime import datetime, timezone, timedelta
 
 import json
 import re
@@ -53,6 +54,8 @@ class ParsedMessage:
 
 
 def _varint(d: bytes, i: int) -> Tuple[int, int]:
+    if i < len(d) and d[i] < 0x80:
+        return d[i], i + 1
     v = 0
     s = 0
     while i < len(d):
@@ -97,7 +100,9 @@ def pb_fields(d: bytes) -> List[Tuple[int, int, Any]]:
 
 
 def _decode_str(v: Any) -> str:
-    if isinstance(v, (bytes, bytearray)):
+    if not v:
+        return ""
+    if type(v) is bytes or isinstance(v, (bytes, bytearray)):
         try:
             return v.decode("utf-8")
         except UnicodeDecodeError:
@@ -105,7 +110,7 @@ def _decode_str(v: Any) -> str:
                 return v.decode("gbk", errors="ignore")
             except Exception:
                 return ""
-    return str(v) if v is not None else ""
+    return str(v)
 
 _s = _decode_str
 

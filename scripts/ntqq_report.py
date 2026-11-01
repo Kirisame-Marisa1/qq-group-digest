@@ -24,6 +24,11 @@ BARS = '▁▂▃▄▅▆▇█'
 KW_SAMPLE_CAP = 20000
 HEXONLY = re.compile(r'^[0-9A-Fa-f]{2,8}[A-Za-z0-9]{0,4}$')
 FILELIKE = re.compile(r'\.(jpg|jpeg|png|gif|webp|bmp|mp4|mp3|amr|silk|zip|rar|7z|pdf|docx?|xlsx?|txt)$', re.I)
+RE_FWD = re.compile(r'\[转发聊天记录[^\]]*\]')
+RE_RUN = re.compile(r'[\u4e00-\u9fffA-Za-z0-9]{2,}')
+AT_NAME = re.compile(r'@([^\s@|]{1,16})')
+RE_CJK_RUN = re.compile(r'[\u4e00-\u9fff]{2,}')
+RE_ALNUM_RUN = re.compile(r'[A-Za-z0-9]{2,}')
 
 
 def bar(v, mx, width=10):
@@ -36,24 +41,30 @@ def keywords(texts, min_count=3, topk=20):
     texts = texts[:KW_SAMPLE_CAP]
     cnt = Counter()
     for t in texts:
-        t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', t or '')
-        for run in re.findall(r'[\u4e00-\u9fffA-Za-z0-9]{2,}', t):
+        if not t:
+            continue
+        if '[' in t:
+            t = RE_FWD.sub(' ', t)
+        for run in RE_RUN.findall(t):
             if FILELIKE.search(run):
                 continue
-            L = len(run)
+            L = min(len(run), 80)
             for n in (2, 3, 4, 5, 6):
                 if n > L:
                     break
                 for i in range(L - n + 1):
                     g = run[i:i + n]
-                    if all(c in NOISE_CHARS for c in g):
-                        continue
-                    has_cjk = any('\u4e00' <= c <= '\u9fff' for c in g)
+                    if g[0] in NOISE_CHARS and g[-1] in NOISE_CHARS:
+                        if n == 2 or all(c in NOISE_CHARS for c in g):
+                            continue
+                    c0, c1 = g[0], g[1]
+                    has_cjk = ('\u4e00' <= c0 <= '\u9fff') or ('\u4e00' <= c1 <= '\u9fff')
                     if not has_cjk:
-                        if HEXONLY.match(g) or g.isdigit():
-                            continue
-                        if n < 3:
-                            continue
+                        if n > 2 and any('\u4e00' <= c <= '\u9fff' for c in g[2:]):
+                            has_cjk = True
+                        else:
+                            if HEXONLY.match(g) or g.isdigit() or n < 3:
+                                continue
                     cnt[g] += 1
     cand = sorted(((g, c) for g, c in cnt.items() if c >= min_count),
                   key=lambda x: (-x[1] * (1 + 0.45 * (len(x[0]) - 2)), -len(x[0]), x[0]))
@@ -134,8 +145,10 @@ def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False
     kinds = Counter(r['kind'] for r in conv)
     ats = Counter()
     for r in conv:
-        for m in re.findall(r'@([^\s@|]{1,16})', mk(r['text']) or ''):
-            ats[m] += 1
+        t = mk(r['text']) or ''
+        if '@' in t:
+            for m in AT_NAME.findall(t):
+                ats[m] += 1
     L = []
     L.append('## %s (%s)' % (name or '未知群', code_label(code)))
     L.append('')
@@ -290,11 +303,11 @@ def extract_keywords(q):
     # 在结构助词处断开，再在每段内取 2/3/4 元组
     clean = ''.join((' ' if c in PARTICLE else c) for c in clean)
     grams = set()
-    for run in re.findall(r'[\u4e00-\u9fff]{2,}', clean):
+    for run in RE_CJK_RUN.findall(clean):
         for L in (2, 3, 4):
             for i in range(len(run) - L + 1):
                 grams.add(run[i:i + L])
-    for run in re.findall(r'[A-Za-z0-9]{2,}', clean):
+    for run in RE_ALNUM_RUN.findall(clean):
         if not run.isdigit():
             grams.add(run.lower())
     return known, sorted(grams, key=lambda x: -len(x))
@@ -358,7 +371,10 @@ def ask(idx, q, t0, t1, group_codes=None, limit=40, msg_table='messages', grp_ta
     rows = idx.execute('SELECT * FROM %s WHERE %s ORDER BY group_code, ts' % (msg_table, where), params).fetchall()
     n = max(1, len(rows))
     def clean_meta(t):
-        t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', t or '')
+        if not t:
+            return ''
+        if '[' in t:
+            t = RE_FWD.sub(' ', t)
         for n in excl:
             t = t.replace(n, ' ')
         return t.lower()
@@ -563,8 +579,10 @@ def member_report(idx, out, who, t0, t1, group_spec=None, exact=False, ctx=2,
                 out.append('    %02d时 %-12s %d' % (h, bar(hd[h], mx, 12), hd[h]))
         ats = Counter()
         for r in conv:
-            for m in AT_RE.findall(r['text'] or ''):
-                ats[m.strip()] += 1
+            t = r['text'] or ''
+            if '@' in t:
+                for m in AT_RE.findall(t):
+                    ats[m.strip()] += 1
         if ats:
             out.append('- @ 过的人: ' + '、'.join('%s(%d)' % (k, v) for k, v in ats.most_common(10)))
         safe = nm.replace('%', '').replace('_', '')

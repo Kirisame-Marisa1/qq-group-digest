@@ -209,9 +209,15 @@ def sync_fts_incremental(con: sqlite3.Connection, rows: List[Any]) -> None:
 
 
 def open_ro(path: str) -> sqlite3.Connection:
-    """以只读 URI 模式打开 SQLite 数据库，避免占用或写入。"""
+    """以只读 URI 模式打开 SQLite 数据库，避免占用或写入，并启用 mmap 与页缓存加速扫描。"""
     ap = os.path.abspath(path).replace('\\', '/')
-    return sqlite3.connect('file:%s?mode=ro' % ap, uri=True)
+    con = sqlite3.connect('file:%s?mode=ro' % ap, uri=True)
+    try:
+        con.execute("PRAGMA mmap_size = 268435456;")
+        con.execute("PRAGMA cache_size = -32000;")
+    except sqlite3.DatabaseError:
+        pass
+    return con
 
 
 def open_index(index_path: Optional[str] = None) -> sqlite3.Connection:

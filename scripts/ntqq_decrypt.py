@@ -11,13 +11,15 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 EXT_HEADER, PAGE_SIZE, SALT_SIZE = 1024, 4096, 16
 IV_SIZE, RESERVE = 16, 48
 KEY = None
+SQLITE_HEADER = b'SQLite format 3\x00'
 
 
 def plain(body, key=None):
     k = key if key is not None else KEY
+    algo = k if isinstance(k, algorithms.AES) else algorithms.AES(k)
     enc = body[:len(body) - RESERVE]
     iv = body[len(body) - RESERVE:len(body) - RESERVE + IV_SIZE]
-    d = Cipher(algorithms.AES(k), modes.CBC(iv)).decryptor()
+    d = Cipher(algo, modes.CBC(iv)).decryptor()
     return d.update(enc) + d.finalize()
 
 
@@ -45,6 +47,7 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
         log('ERROR: %s not in key_map' % db_name)
         raise SystemExit(1)
     KEY = key_bytes
+    aes_algo = algorithms.AES(key_bytes)
 
     # 使用 SafeDBSnapshot 进行安全热拷贝
     snapshot_ctx = nullcontext()
@@ -64,9 +67,9 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
             os.makedirs(d, exist_ok=True)
         log('src=%s size=%.2fGB pages=%d' % (actual_src, total / 1073741824.0, pages))
         t0 = time.time()
-        with open(actual_src, 'rb') as fi, open(out_path, 'wb') as fo:
+        with open(actual_src, 'rb', buffering=1048576) as fi, open(out_path, 'wb', buffering=1048576) as fo:
             fi.seek(EXT_HEADER)
-            CHUNK_PAGES = 32  # 128KB 批量缓冲区
+            CHUNK_PAGES = 64  # 256KB 批量预分配缓冲区
             i = 0
             while i < pages:
                 batch_pages = min(CHUNK_PAGES, pages - i)
@@ -74,18 +77,20 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
                 if not chunk:
                     break
                 n_got = len(chunk) // PAGE_SIZE
-                out_chunk = bytearray()
+                if n_got == 0:
+                    break
+                out_chunk = bytearray(n_got * PAGE_SIZE)
                 for p_idx in range(n_got):
                     curr_p = i + p_idx
                     raw = chunk[p_idx * PAGE_SIZE : (p_idx + 1) * PAGE_SIZE]
+                    offset = p_idx * PAGE_SIZE
                     if curr_p == 0:
-                        pt = plain(raw[SALT_SIZE:], key_bytes)
-                        page = bytes(b'SQLite format 3\x00' + pt)
+                        pt = plain(raw[SALT_SIZE:], aes_algo)
+                        out_chunk[offset : offset + 16] = SQLITE_HEADER
+                        out_chunk[offset + 16 : offset + 16 + len(pt)] = pt
                     else:
-                        page = plain(raw, key_bytes)
-                    if len(page) < PAGE_SIZE:
-                        page += b'\x00' * (PAGE_SIZE - len(page))
-                    out_chunk.extend(page)
+                        pt = plain(raw, aes_algo)
+                        out_chunk[offset : offset + len(pt)] = pt
                 fo.write(out_chunk)
                 i += n_got
                 if (i & 8191) < CHUNK_PAGES or i >= pages:
@@ -114,4 +119,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
