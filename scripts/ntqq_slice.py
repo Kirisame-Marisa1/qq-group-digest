@@ -35,8 +35,12 @@ class Src:
     """按需解密的页读取器（带小 LRU，不落盘）。"""
 
     def __init__(self, path, key, cache=512):
-        self.f = open(path, 'rb')
+        self.f = open(path, 'rb', buffering=1048576)
         self.key = key
+        if Cipher is not None and algorithms is not None:
+            self.aes_algo = algorithms.AES(key)
+        else:
+            self.aes_algo = None
         self.size = os.path.getsize(path)
         self.npages = max(0, (self.size - EXT_HEADER) // PAGE_SIZE)
         self.cache = {}
@@ -50,11 +54,14 @@ class Src:
     def _dec(self, body):
         if Cipher is None:
             from cryptography.hazmat.primitives.ciphers import Cipher as _C, algorithms as _A, modes as _M
+            algo = _A.AES(self.key)
+            _M_mod = _M
         else:
-            _C, _A, _M = Cipher, algorithms, modes
+            _C, _M_mod = Cipher, modes
+            algo = self.aes_algo if self.aes_algo is not None else algorithms.AES(self.key)
         enc = body[:len(body) - RESERVE]
         iv = body[len(body) - RESERVE:len(body) - RESERVE + IV_SIZE]
-        d = _C(_A.AES(self.key), _M.CBC(iv)).decryptor()
+        d = _C(algo, _M_mod.CBC(iv)).decryptor()
         return d.update(enc) + d.finalize()
 
     def page(self, pno):
@@ -211,9 +218,54 @@ class Db:
                     except Exception:
                         self.s.bad_rows += 1
 
+    def rows_desc(self, root):
+        """严格倒序遍历（从最新行到最旧行）：产出 (rowid, payload)。坏页跳过并计数。"""
+        stack = [root]
+        seen = set()
+        while stack:
+            pg = stack.pop()
+            if pg <= 0 or pg > self.s.npages or pg in seen:
+                continue
+            seen.add(pg)
+            try:
+                p, t, n, cells, right, off = self.page_info(pg)
+            except Exception:
+                self.s.bad_pages += 1
+                continue
+            if t == 13:
+                # 叶子节点：倒序遍历 cells 得到由大到小的 rowid
+                for c in reversed(cells):
+                    try:
+                        yield self._payload(p, c)
+                    except Exception:
+                        self.s.bad_rows += 1
+            elif t == 5:
+                # 内部节点：为使 stack.pop() 先弹出 right 再依次向左弹出较小子树，先入栈 child 后入栈 right
+                for c in cells:
+                    try:
+                        stack.append(int.from_bytes(p[c:c + 4], 'big'))
+                    except Exception:
+                        self.s.bad_pages += 1
+                if right:
+                    stack.append(right)
+            elif t == 10:
+                for c in reversed(cells):
+                    try:
+                        yield self._idx_payload(p, c)
+                    except Exception:
+                        self.s.bad_rows += 1
+
     def iter_decoded(self, root, want):
         """产出 (rowid, [只含 want 槽位的值])。坏行跳过。"""
         for rowid, pl in self.rows(root):
+            try:
+                yield rowid, decode_some(pl, want)
+            except Exception:
+                self.s.bad_rows += 1
+
+    def iter_decoded_desc(self, root, want):
+        """倒序产出 (rowid, [只含 want 槽位的值])。坏行跳过。"""
+        for rowid, pl in self.rows_desc(root):
             try:
                 yield rowid, decode_some(pl, want)
             except Exception:

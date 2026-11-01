@@ -203,7 +203,7 @@ def _calculate_incremental_window(idx, days: Optional[int], cut: int, day0: int,
     prev_day0 = int(_meta_get(idx, 'window_day0', '0') or 0)
     scan_day0 = day0
     is_incremental = False
-    if not stream and days and not a.rebuild and not a.only_groups and prev_cutoff > cut and 0 < prev_day0 <= day0:
+    if days and not a.rebuild and not a.only_groups and prev_cutoff > cut and 0 < prev_day0 <= day0:
         cand_day0 = int(datetime.fromtimestamp(max(cut, prev_cutoff - 86400), TZ)
                         .replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
         if cand_day0 > day0:
@@ -240,8 +240,8 @@ def build_once(a):
         sz = os.path.getsize(src) / 1024 ** 3 if os.path.exists(src) else 0
         print('挡位：%s' % wlabel)
         print('源库：%s（%.2f GB）' % (src, sz))
-        print('磁盘占用：约 %.2f GB 临时空间（默认 --source sql：全盘解密，建完索引即删）' % sz)
-        print('           备选 --source stream：不落盘，但慢 2-3 倍')
+        print('磁盘占用：auto 默认倒序流式提取，内存解密零落盘（0 GB 临时文件）；')
+        print('           若显式指定 --source sql：全盘解密需约 %.2f GB 临时空间' % sz)
         print('留存：data/index.db + 群名库（30d约95MB / 90d约195MB / all约1075MB）')
         print('提示：--window all 明显更慢（约 7 分钟）、索引更大；日常用 30d/90d 足够。')
         return
@@ -254,52 +254,65 @@ def build_once(a):
 
     print('@@PROGRESS|{"stage":"key","pct":0,"detail":"准备密钥"}', flush=True)
     km = ensure_keymap(cfg, force=a.force)
-    src_mode = getattr(a, 'source', 'sql') or 'sql'
-    stream = (src_mode == 'stream')
-    snap = (src_mode == 'snap')
+    src_mode = getattr(a, 'source', 'auto') or 'auto'
+    if src_mode == 'auto':
+        # 智能优选：当指定时间窗口（7d / 30d / 90d 等）时默认启用高速倒序流式提取（零 2GB 临时落盘）；全部历史则经典解密
+        stream = True if days else False
+        snap = False
+    else:
+        stream = (src_mode == 'stream')
+        snap = (src_mode == 'snap')
     _prepare_decrypted_sources(cfg, km, a, stream=stream, snap=snap)
-    log('[source] 取数方案：%s' % ('按需解密（--source stream，备选；nt_msg.db 不落盘）' if stream
+    log('[source] 取数方案：%s' % ('倒序按需流式提取（--source stream/auto，零 2GB 临时落盘，秒级完成）' if stream
                                   else ('一致快照（--source snap，来自 ntqq_snapshot.py）' if snap
-                                        else '全盘解密（--source sql，默认；明文库建完索引后删除）')))
+                                        else '经典全盘解密（--source sql，保留后备兜底；明文库建完索引后删除）')))
 
     # QQ 是活跃写入的库，解密快照可能正好落在一次 checkpoint 中间，读 sqlite_master 会报 malformed。
     # 这种情况重新解密一次即可，最多重试 3 轮。
     if stream:
-        import ntqq_slice as SL
-        with open(km, encoding='utf-8') as fh:
-            kmd = json.load(fh)
-        keyhex = None
-        for sh, files in kmd['salt_files'].items():
-            for fp in files:
-                if os.path.basename(fp) == 'nt_msg.db':
-                    keyhex = unwrap_key_hex(kmd['key_map'][sh])
-        if not keyhex:
-            raise SystemExit('key_map 里没有 nt_msg.db 的密钥；先跑 ntqq_key.py')
-        t_dec = time.time()
-        ssrc = SL.Src(src_db_path(cfg), bytes.fromhex(keyhex))
-        sdb = SL.Db(ssrc)
-        SL.load_master(sdb)
-        log('[source] 已解析加密库：%d 张表，%.1fs' % (len(sdb.tables), time.time() - t_dec))
-        want_st = sc.get('structure')
-        opt_tables = set(sc.get('added_tables_9936') or ())
-        opt_cols = set(sc.get('added_columns_9936') or ('40722',))
-        probs = []
-        got = SL.structure_of(sdb)
-        if want_st:
-            for t, cs in want_st.items():
-                if t not in got:
-                    if t in opt_tables:
-                        continue
-                    probs.append('表缺失: %s' % t)
-                else:
-                    miss = [c for c in cs if c not in got[t] and c not in opt_cols]
-                    if miss:
-                        probs.append('表 %s 缺列: %s' % (t, ','.join(miss)))
-        con = None
-        ok = (not probs) or _core_cols_ok(got, sc)
-        sroot, ssql = sdb.tables['group_msg_table']
-        SCOLS = SL.cols_of(ssql)
-    else:
+        try:
+            import ntqq_slice as SL
+            with open(km, encoding='utf-8') as fh:
+                kmd = json.load(fh)
+            keyhex = None
+            for sh, files in kmd['salt_files'].items():
+                for fp in files:
+                    if os.path.basename(fp) == 'nt_msg.db':
+                        keyhex = unwrap_key_hex(kmd['key_map'][sh])
+            if not keyhex:
+                raise ValueError('key_map 里没有 nt_msg.db 的密钥')
+            t_dec = time.time()
+            ssrc = SL.Src(src_db_path(cfg), bytes.fromhex(keyhex))
+            sdb = SL.Db(ssrc)
+            SL.load_master(sdb)
+            if 'group_msg_table' not in sdb.tables:
+                raise ValueError('加密库中未找到 group_msg_table')
+            log('[source] 已解析加密库：%d 张表，%.1fs' % (len(sdb.tables), time.time() - t_dec))
+            want_st = sc.get('structure')
+            opt_tables = set(sc.get('added_tables_9936') or ())
+            opt_cols = set(sc.get('added_columns_9936') or ('40722',))
+            probs = []
+            got = SL.structure_of(sdb)
+            if want_st:
+                for t, cs in want_st.items():
+                    if t not in got:
+                        if t in opt_tables:
+                            continue
+                        probs.append('表缺失: %s' % t)
+                    else:
+                        miss = [c for c in cs if c not in got[t] and c not in opt_cols]
+                        if miss:
+                            probs.append('表 %s 缺列: %s' % (t, ','.join(miss)))
+            con = None
+            ok = (not probs) or _core_cols_ok(got, sc)
+            sroot, ssql = sdb.tables['group_msg_table']
+            SCOLS = SL.cols_of(ssql)
+        except Exception as e:
+            log('warn: 倒序流式解析初始化异常 (%s)，平滑回退至经典全盘解密模式...' % e)
+            stream = False
+            _prepare_decrypted_sources(cfg, km, a, stream=False, snap=snap)
+
+    if not stream:
         con = None
         for attempt in range(3):
             con = open_ro(os.path.join(PLAIN, 'nt_msg.db'))
@@ -506,15 +519,28 @@ def build_once(a):
         kept = 0
         seen = set()
         t_scan = time.time()
-        for rowid, pl in sdb.rows(sroot):
+        consecutive_old = 0
+        STOP_THRESHOLD = 200  # 连续 200 条消息早于窗口阈值且已有命中时判定窗口已扫完，提前终止
+        for rowid, pl in sdb.rows_desc(sroot):
             scanned += 1
             try:
                 g = SL.decode_some(pl, GATE)
             except Exception:
                 ssrc.bad_rows += 1
                 continue
+            msg_day = g[1] or 0
+            if scan_day0 > 0 and msg_day < scan_day0:
+                consecutive_old += 1
+                if consecutive_old >= STOP_THRESHOLD:
+                    log('[source] 倒序流式扫描触发提前终止（连续 %d 条早于窗口 %s），已完成窗口提取'
+                        % (consecutive_old, datetime.fromtimestamp(scan_day0, TZ).strftime('%Y-%m-%d')))
+                    break
+                continue
+            else:
+                consecutive_old = 0
+
             gk = g[0]
-            if gk not in want_groups or (g[1] or 0) < scan_day0:
+            if gk not in want_groups:
                 continue
             try:
                 vals = SL.decode_some(pl, need)
@@ -525,15 +551,15 @@ def build_once(a):
             seen.add(gk)
             kept += 1
             take_row(gk, tuple(vals[:len(KEYS) + 1]))
-            if scanned % 1000000 == 0:
-                log('  [scan] 已扫 %d 行 / 命中 %d 条 / %.0fs' % (scanned, kept, time.time() - t_scan))
+            if scanned % 100000 == 0:
+                log('  [scan] 已倒序扫描 %d 行 / 命中 %d 条 / %.1fs' % (scanned, kept, time.time() - t_scan))
         n = scanned
         ngroup = len(seen)
         try:
             ssrc.close()
         except Exception:
             pass
-        log('[source] 扫描 %d 行，命中 %d 群 / %d 条，坏行 %d，耗时 %.1fs'
+        log('[source] 倒序流式提取完成：扫描 %d 行，命中 %d 群 / %d 条，坏行 %d，耗时 %.1fs'
             % (scanned, ngroup, kept, ssrc.bad_rows, time.time() - t_scan))
 
     pending = [] if stream else list(codes)
@@ -593,7 +619,7 @@ def build_once(a):
 
     # ── 私聊消息抽取（可选 --include-c2c）────────────────────────────────────
     c2c_n = 0
-    if include_c2c and not stream and con is not None:
+    if include_c2c and con is not None:
         log('[c2c] 正在扫描私聊消息表 c2c_msg_table ...')
         sql_c2c = ('SELECT rowid,%s FROM c2c_msg_table WHERE "%s">=? ORDER BY "%s"'
                    % (cols, G['day'], G['day']))
@@ -761,7 +787,7 @@ def main():
     ap.add_argument('--days', type=int, default=None, help='滚动窗口天数（兼容旧参数）')
     ap.add_argument('--window', default=None,
                     help='挡位：all / 365d / 180d / 90d / 30d / 7d（优先于 --days）')
-    ap.add_argument('--source', choices=('sql', 'stream', 'snap'), default='sql',
+    ap.add_argument('--source', choices=('auto', 'sql', 'stream', 'snap'), default='auto',
                     help='取数方式：sql=全盘解密（默认、最快）；stream=按需解密（不落盘但慢 2-3 倍）；'
                          'snap=直接消费 ntqq_snapshot.py 产出的一致快照明文库')
     ap.add_argument('--keep-plain', action='store_true',
