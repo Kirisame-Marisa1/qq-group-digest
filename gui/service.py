@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -42,6 +43,21 @@ class QQGuiService:
             if os.path.exists(cand):
                 return cand
         return None
+
+    @staticmethod
+    def get_subprocess_kwargs() -> Dict[str, Any]:
+        """Return platform-specific kwargs to prevent console windows popping up on Windows."""
+        kwargs: Dict[str, Any] = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            if hasattr(subprocess, "STARTUPINFO"):
+                startupinfo = subprocess.STARTUPINFO()
+                if hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                if hasattr(subprocess, "SW_HIDE"):
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                kwargs["startupinfo"] = startupinfo
+        return kwargs
 
     @staticmethod
     def load_config(config_path: str = CONFIG_PATH) -> Dict[str, Any]:

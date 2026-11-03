@@ -730,6 +730,7 @@ class QQToolGUI(ctk.CTk):
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             env["NTQQ_CONFIG"] = CONFIG_PATH
+            sp_kwargs = QQGuiService.get_subprocess_kwargs()
             self.current_process = subprocess.Popen(
                 [py] + cmd,
                 stdout=subprocess.PIPE,
@@ -740,6 +741,7 @@ class QQToolGUI(ctk.CTk):
                 env=env,
                 bufsize=1,
                 cwd=SCRIPTS_DIR,
+                **sp_kwargs,
             )
             for line in self.current_process.stdout:
                 line = line.rstrip("\r\n")

@@ -31,6 +31,21 @@ def _get_core():
     return ntqq_core
 
 
+def _subproc_kwargs():
+    """返回用于抑制 Windows 控制台黑框弹出的参数字典。"""
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        if hasattr(subprocess, "STARTUPINFO"):
+            si = subprocess.STARTUPINFO()
+            if hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            if hasattr(subprocess, "SW_HIDE"):
+                si.wShowWindow = subprocess.SW_HIDE
+            kwargs["startupinfo"] = si
+    return kwargs
+
+
 # ── DPAPI 密钥本地加密保护（Windows） ──────────────────────────────────────
 def dpapi_encrypt(raw_bytes: bytes) -> bytes:
     """使用当前 Windows 登录用户的 DPAPI 凭据加密字节流。非 Windows 原样返回。"""
@@ -208,7 +223,14 @@ def ensure_keymap(cfg: dict, force: bool = False) -> str:
         core.log_debug('进程内调用 ntqq_key.extract_keys 失败，回退子进程: %r' % e)
     py = sys.executable
     cmd = [py, os.path.join(core.HERE, 'ntqq_key.py'), '--qq', str(cfg['account']), '-o', km]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    r = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        **_subproc_kwargs(),
+    )
     if r.returncode != 0 or not os.path.exists(km):
         core.log(r.stdout or '')
         core.log(r.stderr or '')
@@ -254,8 +276,16 @@ def ensure_plain(cfg: dict, km: str, name: str, force: bool = False) -> str:
         core.log_debug('进程内调用 ntqq_decrypt.decrypt_db 失败，回退子进程: %r' % e)
     cmd = [sys.executable, os.path.join(core.HERE, 'ntqq_decrypt.py'),
            '--key-map', km, '--db', name, '--out', part]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, encoding='utf-8', errors='replace', bufsize=1)
+    p = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        bufsize=1,
+        **_subproc_kwargs(),
+    )
     tail = []
     for line in p.stdout:
         line = line.rstrip('\r\n')

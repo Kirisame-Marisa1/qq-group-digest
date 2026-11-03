@@ -54,8 +54,26 @@ def _report(msg: str) -> None:
     print(msg)
 
 
+def _maybe_hide_console() -> None:
+    """If launched on Windows via python.exe without CLI arguments, hide redundant console window."""
+    if sys.platform == "win32" and not FROZEN:
+        if len(sys.argv) > 1:
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                pids = (ctypes.c_uint * 2)()
+                count = ctypes.windll.kernel32.GetConsoleProcessList(pids, 2)
+                if count <= 1:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
+
+
 def main() -> None:
     """Application entrypoint with test runner support."""
+    _maybe_hide_console()
     if "--self-test" in sys.argv:
         app = QQToolGUI()
         py = app.get_python_exe()

@@ -118,3 +118,26 @@ def test_detect_running_qq_ctypes_fallback(monkeypatch):
         assert isinstance(qq_exe, str)
         assert len(qq_exe) > 0
 
+
+def test_subprocess_kwargs_suppress_window(monkeypatch):
+    """验证在 Windows 平台下正确注入无控制台黑框参数，非 Windows 下返回空字典。"""
+    import subprocess
+    import sys
+
+    # 1. 模拟 Windows 环境
+    monkeypatch.setattr(sys, "platform", "win32")
+    win_kwargs = QQGuiService.get_subprocess_kwargs()
+    assert "creationflags" in win_kwargs
+    assert win_kwargs["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert "startupinfo" in win_kwargs
+    si = win_kwargs["startupinfo"]
+    assert isinstance(si, subprocess.STARTUPINFO)
+    assert bool(si.dwFlags & getattr(subprocess, "STARTF_USESHOWWINDOW", 1))
+    assert si.wShowWindow == getattr(subprocess, "SW_HIDE", 0)
+
+    # 2. 模拟非 Windows (Linux/macOS) 环境
+    monkeypatch.setattr(sys, "platform", "linux")
+    nix_kwargs = QQGuiService.get_subprocess_kwargs()
+    assert nix_kwargs == {}
+
+

@@ -76,6 +76,10 @@ def assemble():
     shutil.copytree(os.path.join(BASE_DIR, "scripts"), os.path.join(RELEASE_PKG, "scripts"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(os.path.join(BASE_DIR, "gui"), os.path.join(RELEASE_PKG, "gui"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(os.path.join(BASE_DIR, "schema"), os.path.join(RELEASE_PKG, "schema"))
+    for extra_file in ("gui_app.pyw", "gui_app.py"):
+        src_extra = os.path.join(BASE_DIR, extra_file)
+        if os.path.exists(src_extra):
+            shutil.copy2(src_extra, os.path.join(RELEASE_PKG, extra_file))
     
     cfg_src = os.path.join(BASE_DIR, "config.example.json")
     if os.path.exists(cfg_src):
