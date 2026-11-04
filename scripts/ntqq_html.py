@@ -529,6 +529,12 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
     except Exception:
         actions_data = {'actions': [], 'decisions': []}
 
+    try:
+        from ntqq_social import build_social_graph
+        soc_graph = build_social_graph(sanitized_rows_for_extract)
+    except Exception:
+        soc_graph = {'nodes': [], 'edges': [], 'top_dyads': []}
+
     return {
         'mode': 'digest',
         'meta': meta_info,
@@ -553,6 +559,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
         'focus_items': focus_items,
         'links': links_data,
         'actions': actions_data,
+        'social_graph': soc_graph,
         'groups': groups_data,
         'markdown': markdown_text,
     }
@@ -602,6 +609,9 @@ def get_html_template() -> str:
 
 def render_html_report(payload):
     """将结构化 payload 渲染为独立的离线 HTML 字符串。"""
+    if payload.get('mode') == 'wrapped':
+        from ntqq_wrapped import render_wrapped_html
+        return render_wrapped_html(payload.get('extra', {}))
     title = (payload.get('meta') or {}).get('title') or 'QQ 群聊可视化简报'
     safe_title = (
         str(title)

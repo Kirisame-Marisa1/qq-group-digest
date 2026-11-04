@@ -710,6 +710,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     ap.add_argument('--actions', action='store_true', help='在报告中提取并输出「待办事项与决议雷达」')
     ap.add_argument('--export', choices=['obsidian'], default=None, help='导出格式规范，例如 obsidian')
     ap.add_argument('--obsidian-vault', default=None, help='指定导出到 Obsidian 库的目录路径')
+    ap.add_argument('--social', action='store_true', help='分析并输出「群聊社交互动网络分析」')
+    ap.add_argument('--wrapped', action='store_true', help='生成「群聊时光机 / 回忆录」')
     ap.add_argument('--structured', action='store_true', default=False,
                     help='采用模块 5 规范：4 大标准化板块（热点/资源/金句/微画像）与 [Ref: #seq] 溯源锚点')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
@@ -1138,6 +1140,23 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             act_data = extract_action_items_and_decisions(all_target_rows)
             if act_data.get('actions') or act_data.get('decisions'):
                 out.append(format_action_items_markdown(act_data))
+
+        if getattr(a, 'social', False):
+            from ntqq_social import build_social_graph, format_social_graph_markdown
+            all_target_rows = [r for item in prepared for r in item[4]]
+            soc_graph = build_social_graph(all_target_rows)
+            if soc_graph.get('nodes'):
+                out.append(format_social_graph_markdown(soc_graph))
+
+        if getattr(a, 'wrapped', False):
+            from ntqq_wrapped import build_chat_wrapped, format_wrapped_markdown, render_wrapped_html
+            all_target_rows = [r for item in prepared for r in item[4]]
+            p_name = '群聊时光机'
+            wrapped_data = build_chat_wrapped(all_target_rows, period_name=p_name)
+            out.append(format_wrapped_markdown(wrapped_data))
+            if html_out:
+                html_mode = 'wrapped'
+                html_extra = wrapped_data
 
     text = '\n'.join(out)
     if a.anonymize:
