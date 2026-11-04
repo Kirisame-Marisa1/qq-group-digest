@@ -496,6 +496,39 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
     top_grp = groups_data[0] if groups_data else None
     top_spk = global_speakers[0] if global_speakers else None
 
+    sanitized_rows_for_extract = []
+    for _, _, code, _, r_list, _ in prepared:
+        gm = anon_map.get(code, {})
+        use_anon = is_anon or bool(gm)
+        for r in r_list:
+            sname = r.get('sender_name') or ''
+            txt = r.get('text') or ''
+            if use_anon and anon_unknown_fn:
+                sname = anon_unknown_fn(sname, gm)
+            if use_anon and mask_names_fn:
+                txt = mask_names_fn(txt, gm)
+            if is_anon and scrub_fn:
+                txt = scrub_fn(txt)
+            sanitized_rows_for_extract.append({
+                'text': txt,
+                'sender_name': sname,
+                'sender': sname if use_anon else r.get('sender'),
+                'timestamp': r.get('ts'),
+                'seq': r.get('msg_seq', 0),
+            })
+
+    try:
+        from ntqq_links import extract_links_and_resources
+        links_data = extract_links_and_resources(sanitized_rows_for_extract)
+    except Exception:
+        links_data = []
+
+    try:
+        from ntqq_action_items import extract_action_items_and_decisions
+        actions_data = extract_action_items_and_decisions(sanitized_rows_for_extract)
+    except Exception:
+        actions_data = {'actions': [], 'decisions': []}
+
     return {
         'mode': 'digest',
         'meta': meta_info,
@@ -518,7 +551,8 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
             'global_keywords': global_kws,
         },
         'focus_items': focus_items,
-        'links': (lambda: (lambda m: m.extract_links_and_resources([r for _, _, _, _, r_list, _ in prepared for r in r_list]))(__import__('ntqq_links')))(),
+        'links': links_data,
+        'actions': actions_data,
         'groups': groups_data,
         'markdown': markdown_text,
     }

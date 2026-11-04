@@ -682,6 +682,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     ap.add_argument('--no-group-state', action='store_true',
                     help='不在报告里输出「群变更」（新入群/退群/改名）段落')
     ap.add_argument('--links', action='store_true', help='在报告中提取并输出「群内资源与链接合辑」')
+    ap.add_argument('--actions', action='store_true', help='在报告中提取并输出「待办事项与决议雷达」')
     ap.add_argument('--structured', action='store_true', default=False,
                     help='采用模块 5 规范：4 大标准化板块（热点/资源/金句/微画像）与 [Ref: #seq] 溯源锚点')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
@@ -1103,6 +1104,13 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             links_extracted = extract_links_and_resources(all_target_rows)
             if links_extracted:
                 out.append(format_links_markdown(links_extracted))
+
+        if getattr(a, 'actions', False) or getattr(a, 'class_mode', False):
+            from ntqq_action_items import extract_action_items_and_decisions, format_action_items_markdown
+            all_target_rows = [r for item in prepared for r in item[4]]
+            act_data = extract_action_items_and_decisions(all_target_rows)
+            if act_data.get('actions') or act_data.get('decisions'):
+                out.append(format_action_items_markdown(act_data))
 
     text = '\n'.join(out)
     if a.anonymize:
