@@ -9,9 +9,11 @@ import pytest
 from scripts.ntqq_links import extract_links_and_resources, format_links_markdown
 from scripts.ntqq_action_items import extract_action_items_and_decisions, format_action_items_markdown
 from scripts.ntqq_ocr import init_ocr_table, record_ocr_result, search_ocr_text
-from scripts.ntqq_obsidian import export_to_obsidian, generate_obsidian_markdown
+from scripts.ntqq_obsidian import export_to_obsidian, generate_obsidian_markdown, sanitize_wikilink
 from scripts.ntqq_social import build_social_graph, format_social_graph_markdown
 from scripts.ntqq_wrapped import build_chat_wrapped, format_wrapped_markdown, render_wrapped_html
+from scripts.ntqq_html import build_digest_payload, render_html_report
+from ntqq_core import fmt
 
 
 def test_ecosystem_full_pipeline_e2e(tmp_path):
@@ -26,7 +28,7 @@ def test_ecosystem_full_pipeline_e2e(tmp_path):
             "sender": "10001",
             "sender_name": "组长Alice",
             "kind": "text",
-            "text": "@Bob 请于周五前提交测试报告，项目地址: https://github.com/org/repo?utm_source=qq 辛苦！",
+            "text": "@Bob 请于周五前提交测试报告，项目地址: (https://github.com/org/repo?utm_source=qq) 辛苦！",
         },
         {
             "msg_id": 2,
@@ -63,11 +65,12 @@ def test_ecosystem_full_pipeline_e2e(tmp_path):
         },
     ]
 
-    # 1. 验证 Links 提取
+    # 1. 验证 Links 提取及标点符号清理
     links = extract_links_and_resources(messages)
     assert len(links) == 2
     gh_link = next(l for l in links if l["category"] == "code")
     assert gh_link["clean_url"] == "https://github.com/org/repo"
+    assert not gh_link["clean_url"].endswith(")")  # Trailing parenthesis stripped!
     assert "utm_source" not in gh_link["clean_url"]
     links_md = format_links_markdown(links)
     assert "📦 群内资源与链接合辑" in links_md
@@ -127,3 +130,99 @@ def test_ecosystem_full_pipeline_e2e(tmp_path):
     wrapped_html = render_wrapped_html(wrapped)
     assert "<!DOCTYPE html>" in wrapped_html
     assert "测试时光机" in wrapped_html
+
+
+def test_sqlite3_row_compatibility_and_xss_prevention(tmp_path):
+    """验证 sqlite3.Row 真实对象兼容性以及 HTML XSS 注入防护。"""
+    db_file = tmp_path / "test_rows.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE messages (
+            msg_id INTEGER PRIMARY KEY,
+            ts INTEGER,
+            day TEXT,
+            hour INTEGER,
+            group_code INTEGER,
+            group_name TEXT,
+            sender_uid TEXT,
+            sender_qq INTEGER,
+            sender_name TEXT,
+            direction INTEGER,
+            msg_type INTEGER,
+            subtype INTEGER,
+            kind TEXT,
+            text TEXT,
+            reply_seq INTEGER
+        )
+    """)
+    conn.execute("""
+        INSERT INTO messages VALUES 
+        (1, 1700010000, '2026-11-04', 2, 123456, '测试群', 'u1', 1001, '<script>alert(1)</script>', 0, 1, 0, 'text', '@Bob 请于周五前提交 https://github.com/foo/bar.', 0),
+        (2, 1700010050, '2026-11-04', 2, 123456, '测试群', 'u2', 1002, '开发Bob', 0, 1, 0, 'text', '收到，昨天大家完成得很棒！', 0)
+    """)
+    conn.commit()
+
+    rows = conn.execute("SELECT * FROM messages").fetchall()
+    assert isinstance(rows[0], sqlite3.Row)
+
+    # 1. 验证 sqlite3.Row 传入 extract_links_and_resources 不崩溃
+    links = extract_links_and_resources(rows)
+    assert len(links) == 1
+    assert links[0]["clean_url"] == "https://github.com/foo/bar"
+    assert not links[0]["clean_url"].endswith(".")
+
+    # 2. 验证 sqlite3.Row 传入 extract_action_items_and_decisions 不崩溃，且过滤完成夸奖
+    actions = extract_action_items_and_decisions(rows)
+    assert len(actions["actions"]) == 1
+    assert "Bob" in actions["actions"][0]["assignee"]
+    # 确保 "昨天大家完成得很棒" 未被误报为待办任务
+    assert not any("完成得很棒" in a["task"] for a in actions["actions"])
+
+    # 3. 验证 sqlite3.Row 传入 build_social_graph 不崩溃
+    soc = build_social_graph(rows)
+    assert len(soc["nodes"]) >= 1
+
+    # 4. 验证 sqlite3.Row 传入 build_chat_wrapped 不崩溃
+    wrapped = build_chat_wrapped(rows, period_name="<XSS>时光机</XSS>")
+    assert wrapped["total_messages"] == 2
+
+    # 5. 验证 render_wrapped_html 严格转义 XSS
+    html_out = render_wrapped_html(wrapped)
+    assert "<script>" not in html_out
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_out
+    assert "&lt;XSS&gt;时光机&lt;/XSS&gt;" in html_out
+
+    # 6. 验证 Obsidian wikilink 过滤
+    raw_name = "[管理员] 张三 | 架构师 #1"
+    clean_wiki = sanitize_wikilink(raw_name)
+    assert clean_wiki == "管理员 张三  架构师 1"
+    assert "[" not in clean_wiki and "]" not in clean_wiki and "|" not in clean_wiki and "#" not in clean_wiki
+
+    # 7. 验证 build_digest_payload 传入 prepared 含 sqlite3.Row 时不抛 AttributeError
+    prepared = [(2, 2, 123456, '测试群', rows, 0)]
+    meta_info = {
+        'title': '测试简报',
+        'is_c2c': False,
+        'anonymized': False,
+        'brief': False,
+        'class_mode': True,
+        'cutoff_str': '2026-11-04 12:00:00',
+        'cur_n': 2,
+        'prev_n': 0,
+        'delta': 2,
+    }
+    payload = build_digest_payload(
+        meta_info=meta_info,
+        prepared=prepared,
+        focus_rows=rows,
+        fmt_fn=fmt,
+        kw_fn=lambda texts, **kwargs: [],
+        class_groups={123456},
+        markdown_text='# 测试',
+    )
+    assert payload['mode'] == 'digest'
+    assert len(payload['links']) == 1
+    assert len(payload['actions']['actions']) == 1
+
+    conn.close()

@@ -1,9 +1,9 @@
 """
 ntqq_obsidian.py - Obsidian / 个人第二大脑知识库导出适配器
 将群聊分析报告转化为符合 Obsidian 语法规范的双链笔记：
-1. 规范 YAML Frontmatter 元数据
+1. 规范 YAML Frontmatter 元数据（单引号转义防御）
 2. 现代 Obsidian Callouts（[!summary], [!todo], [!quote]）
-3. 自动构建双向链接 [[关键词]] 与 [[群友]]
+3. 严格清洗双向链接 [[关键词]] 与 [[群友]] 避免字符冲突
 4. 兼容 obsidian-chat-view-qq 原生聊天气泡代码块 (```chat-qq)
 """
 
@@ -17,16 +17,27 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' ._') or 'unnamed'
 
 
+def sanitize_wikilink(text: str) -> str:
+    """清理 Wikilink 中的特殊保留字符 [ ] | # ^，避免破坏 Obsidian 语法。"""
+    return re.sub(r'[\[\]|#^]', '', str(text)).strip()
+
+
+def _yaml_escape(val: str) -> str:
+    """转义 YAML 单引号标量中的单引号。"""
+    return str(val).replace("'", "''")
+
+
 def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     """
     根据聚合报告数据，生成完整的 Obsidian 格式 Markdown 笔记正文。
     """
     options = options or {}
-    title = data.get("title") or f"QQ群聊简报 - {data.get('group_name', '未命名群')}"
-    group_id = str(data.get("group_id") or "0")
-    group_name = data.get("group_name") or f"群_{group_id}"
-    date_str = data.get("date_str") or datetime.now().strftime("%Y-%m-%d")
-    period_str = data.get("period_str") or date_str
+    raw_title = data.get("title") or f"QQ群聊简报 - {data.get('group_name', '未命名群')}"
+    title = _yaml_escape(raw_title)
+    group_id = _yaml_escape(str(data.get("group_id") or "0"))
+    group_name = _yaml_escape(data.get("group_name") or f"群_{group_id}")
+    date_str = _yaml_escape(data.get("date_str") or datetime.now().strftime("%Y-%m-%d"))
+    period_str = _yaml_escape(data.get("period_str") or date_str)
     tot_msgs = int(data.get("total_messages") or 0)
     act_mems = int(data.get("active_members") or 0)
     summary = (data.get("summary") or "").strip()
@@ -52,7 +63,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
         "  - obsidian-second-brain",
         "---",
         "",
-        f"# {title}",
+        f"# {raw_title}",
         "",
         f"> 📅 **统计周期**：`{period_str}` ｜ 👥 **群成员**：`{act_mems} 人活跃` ｜ 💬 **消息量**：`{tot_msgs} 条`",
         "",
@@ -64,7 +75,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
         if summary:
             lines.append(f"> {summary}")
         if keywords:
-            kw_links = " ".join(f"[[{kw}]]" for kw in keywords)
+            kw_links = " ".join(f"[[{sanitize_wikilink(kw)}]]" for kw in keywords if sanitize_wikilink(kw))
             lines.append(f"> \n> **相关主题标签**：{kw_links}")
         lines.append("")
 
@@ -72,7 +83,8 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     if actions:
         lines.append("> [!todo] 📌 待办行动清单")
         for a in actions:
-            assignee = a.get("assignee") or "成员"
+            raw_assignee = a.get("assignee") or "成员"
+            assignee = sanitize_wikilink(raw_assignee) or "成员"
             task = a.get("task") or ""
             ddl = f" (⏳ 截止: {a['deadline']})" if a.get("deadline") and a["deadline"] != "未明确" else ""
             lines.append(f"> - [ ] [[{assignee}]] : {task}{ddl}")
@@ -82,7 +94,8 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     if decisions:
         lines.append("> [!tip] 📢 决议与重要公告")
         for d in decisions:
-            announcer = d.get("announcer") or "群公告"
+            raw_ann = d.get("announcer") or "群公告"
+            announcer = sanitize_wikilink(raw_ann) or "群公告"
             dec = d.get("decision") or ""
             lines.append(f"> - 🎯 **{dec}** (由 [[{announcer}]] 确认)")
         lines.append("")
@@ -91,7 +104,8 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     if quotes:
         lines.append("> [!quote] 💬 高光金句与锐评")
         for q in quotes:
-            sender = q.get("sender") or "群友"
+            raw_spk = q.get("sender") or "群友"
+            sender = sanitize_wikilink(raw_spk) or "群友"
             text = q.get("text") or ""
             lines.append(f"> - [[{sender}]] : \"{text}\"")
         lines.append("")

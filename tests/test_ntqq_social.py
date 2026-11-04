@@ -33,3 +33,4 @@ def test_build_social_graph():
     md = format_social_graph_markdown(graph)
     assert "群聊社交互动网络" in md
     assert "Alice" in md and "Bob" in md
+

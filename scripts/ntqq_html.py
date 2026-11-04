@@ -501,8 +501,9 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
         gm = anon_map.get(code, {})
         use_anon = is_anon or bool(gm)
         for r in r_list:
-            sname = r.get('sender_name') or ''
-            txt = r.get('text') or ''
+            r_dict = dict(r) if hasattr(r, 'keys') else (r if isinstance(r, dict) else {})
+            sname = r_dict.get('sender_name') or ''
+            txt = r_dict.get('text') or ''
             if use_anon and anon_unknown_fn:
                 sname = anon_unknown_fn(sname, gm)
             if use_anon and mask_names_fn:
@@ -512,9 +513,9 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
             sanitized_rows_for_extract.append({
                 'text': txt,
                 'sender_name': sname,
-                'sender': sname if use_anon else r.get('sender'),
-                'timestamp': r.get('ts'),
-                'seq': r.get('msg_seq', 0),
+                'sender': sname if use_anon else (r_dict.get('sender') or r_dict.get('sender_qq')),
+                'timestamp': r_dict.get('ts') or r_dict.get('timestamp') or 0,
+                'seq': r_dict.get('msg_seq') or r_dict.get('seq') or 0,
             })
 
     try:

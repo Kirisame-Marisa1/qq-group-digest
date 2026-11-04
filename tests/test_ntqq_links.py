@@ -92,3 +92,4 @@ def test_format_links_markdown():
     assert "📦 群内资源与链接合辑" in md
     assert "https://github.com/foo/bar" in md
     assert "Alice" in md
+

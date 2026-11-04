@@ -26,6 +26,16 @@ try {
     if ($null -eq $engine) {
         $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new("zh-Hans-CN"))
     }
+    if ($null -eq $engine) {
+        $availableLangs = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages
+        if ($availableLangs -and $availableLangs.Count -gt 0) {
+            $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($availableLangs[0])
+        }
+    }
+    if ($null -eq $engine) {
+        Write-Output ""
+        exit 0
+    }
     $ocrResult = Await-Task ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
     Write-Output $ocrResult.Text
 } catch {

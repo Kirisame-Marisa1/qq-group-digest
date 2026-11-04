@@ -1,14 +1,34 @@
 """
 ntqq_wrapped.py - 群聊时光机与年度/阶段总结生成器 (Chat Wrapped)
 汇总长周期内群聊里的大事件、趣味之最、守夜人纪录与专属成就勋章。
+兼容 dict 与 sqlite3.Row，且 HTML 视图具备严格的 XSS 转义防护。
 """
 
+import html
 from collections import Counter
 from datetime import datetime
 
 
-def build_chat_wrapped(messages: list[dict], period_name: str = "年度时光机") -> dict:
-    """构建时光机全景统计指标。"""
+def _get_val(row, keys, default=None):
+    """同时兼容 dict 和 sqlite3.Row，并支持字段别名回退。"""
+    if isinstance(keys, str):
+        keys = [keys]
+    for k in keys:
+        if isinstance(row, dict):
+            if k in row and row[k] is not None:
+                return row[k]
+        else:
+            try:
+                val = row[k]
+                if val is not None:
+                    return val
+            except (KeyError, IndexError, TypeError):
+                pass
+    return default
+
+
+def build_chat_wrapped(messages: list, period_name: str = "年度时光机") -> dict:
+    """构建时光机全景统计指标。兼容 dict 与 sqlite3.Row。"""
     if not messages:
         return {
             "period_name": period_name,
@@ -27,12 +47,12 @@ def build_chat_wrapped(messages: list[dict], period_name: str = "年度时光机
     longest_speaker = "无"
     
     for m in messages:
-        sname = m.get("sender_name")
+        sname = _get_val(m, ["sender_name", "name", "disp_name"])
         if not sname or sname in ("系统", "未知", "系统消息"):
             continue
         speakers[sname] += 1
         
-        h = m.get("hour")
+        h = _get_val(m, ["hour"])
         if h is not None and h >= 0:
             hours[h] += 1
             if h in (0, 1, 2, 3, 4, 5):
@@ -40,11 +60,11 @@ def build_chat_wrapped(messages: list[dict], period_name: str = "年度时光机
             elif h in (6, 7, 8):
                 early_speakers[sname] += 1
                 
-        d = m.get("day")
+        d = _get_val(m, ["day"])
         if d:
             days[d] += 1
             
-        txt = (m.get("text") or "").strip()
+        txt = (_get_val(m, ["text", "msg_text"], "") or "").strip()
         if len(txt) > len(longest_text):
             longest_text = txt
             longest_speaker = sname
@@ -57,7 +77,6 @@ def build_chat_wrapped(messages: list[dict], period_name: str = "年度时光机
     peak_day = days.most_common(1)[0][0] if days else "无"
     peak_day_count = days.most_common(1)[0][1] if days else 0
 
-    # 成就徽章系统
     badges = []
     if top_speaker != "无":
         badges.append({
@@ -130,14 +149,27 @@ def format_wrapped_markdown(w: dict) -> str:
 
 
 def render_wrapped_html(w: dict) -> str:
-    """渲染交互式时光机单文件 HTML 卡片画廊。"""
-    import json
-    data_json = json.dumps(w, ensure_ascii=False)
+    """渲染交互式时光机单文件 HTML 卡片画廊（包含完整 XSS 转义）。"""
+    esc = html.escape
+    title = esc(str(w.get("period_name") or "群聊时光机"))
+    top_spk = esc(str(w.get("top_speaker") or "无"))
+    night_spk = esc(str(w.get("night_owl_speaker") or "无"))
+
+    badge_cards = []
+    for b in w.get("badges", []):
+        b_title = esc(str(b.get("title", "")))
+        b_holder = esc(str(b.get("holder", "")))
+        b_desc = esc(str(b.get("desc", "")))
+        badge_cards.append(
+            f'<div class="badge-card"><div class="badge-title">{b_title} · {b_holder}</div><div class="badge-desc">{b_desc}</div></div>'
+        )
+    badge_html = "".join(badge_cards)
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>{w['period_name']} - QQ群聊时光机</title>
+  <title>{title} - QQ群聊时光机</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {{
@@ -219,28 +251,28 @@ def render_wrapped_html(w: dict) -> str:
 </head>
 <body>
   <div class="wrapped-card">
-    <h1>✨ {w['period_name']}</h1>
+    <h1>✨ {title}</h1>
     <p style="color:var(--sub)">群聊回忆录 · 共同度过的每一个高光瞬间</p>
     <div class="stat-grid">
       <div class="stat-box">
-        <div class="stat-val">{w['total_messages']}</div>
+        <div class="stat-val">{w.get('total_messages', 0)}</div>
         <div class="stat-lbl">条消息记录</div>
       </div>
       <div class="stat-box">
-        <div class="stat-val">{w['unique_speakers']}</div>
+        <div class="stat-val">{w.get('unique_speakers', 0)}</div>
         <div class="stat-lbl">位活跃群友</div>
       </div>
       <div class="stat-box">
-        <div class="stat-val">{w['top_speaker']}</div>
+        <div class="stat-val">{top_spk}</div>
         <div class="stat-lbl">👑 核心发言担当</div>
       </div>
       <div class="stat-box">
-        <div class="stat-val">{w['night_owl_speaker']}</div>
+        <div class="stat-val">{night_spk}</div>
         <div class="stat-lbl">🌙 深夜守夜人</div>
       </div>
     </div>
     <h3 style="margin-top:24px;font-size:18px">🏆 荣誉勋章</h3>
-    {''.join(f'<div class="badge-card"><div class="badge-title">{b["title"]} · {b["holder"]}</div><div class="badge-desc">{b["desc"]}</div></div>' for b in w.get("badges", []))}
+    {badge_html}
   </div>
 </body>
 </html>"""

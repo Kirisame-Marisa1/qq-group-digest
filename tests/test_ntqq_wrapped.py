@@ -26,3 +26,4 @@ def test_build_chat_wrapped():
     assert "时光机" in md
     assert "Charlie" in md
     assert "Alice" in md
+

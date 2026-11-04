@@ -52,3 +52,4 @@ def test_index_media_ocr(tmp_path):
     # Test indexing handles corrupted/dummy files gracefully without breaking
     indexed_count = index_media_ocr(str(db_file), str(media_dir))
     assert indexed_count >= 0
+

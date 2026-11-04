@@ -7,16 +7,18 @@ import re
 import urllib.parse
 from datetime import datetime
 
-# 匹配 URL 的正则（自动避开中文标点与常见括弧）
+# 匹配 URL 的正则（避开中文标点与常见括弧）
 URL_REGEX = re.compile(
-    r'(https?://[^\s<>"\'，。！？；、“”‘’（）《》【】]+)',
+    r'(https?://[^\s<>"\'，。！？；、“”‘’《》【】]+)',
     re.IGNORECASE
 )
+
+TRAILING_PUNCT = ".,!?:;)]}>'\">"
 
 # 常见追踪参数（清洗后可精确去重）
 TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "spm_id_from", "from_source", "from", "ref", "chksm", "scene", "subscene",
+    "spm_id_from", "from_source", "ref", "chksm", "scene", "subscene",
     "share_source", "share_medium", "vd_source", "share_token", "share_id",
     "isappinstalled", "nsukey", "pass_ticket", "wx_header"
 }
@@ -39,12 +41,38 @@ CATEGORY_LABELS = {
 }
 
 
+def _get_val(row, keys, default=None):
+    """同时兼容 dict 和 sqlite3.Row，并支持字段别名回退。"""
+    if isinstance(keys, str):
+        keys = [keys]
+    for k in keys:
+        if isinstance(row, dict):
+            if k in row and row[k] is not None:
+                return row[k]
+        else:
+            try:
+                val = row[k]
+                if val is not None:
+                    return val
+            except (KeyError, IndexError, TypeError):
+                pass
+    return default
+
+
 def clean_url(raw_url: str) -> str:
-    """去除 URL 中的跟踪参数，末尾斜杠归一化"""
+    """去除 URL 中的跟踪参数，末尾斜杠及标点归一化"""
     try:
-        parsed = urllib.parse.urlparse(raw_url.rstrip("/?#&"))
+        url_stripped = raw_url.rstrip(TRAILING_PUNCT).rstrip("/?#&")
+        parsed = urllib.parse.urlparse(url_stripped)
         qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        cleaned_qs = [(k, v) for k, v in qs if k.lower() not in TRACKING_PARAMS]
+        cleaned_qs = []
+        for k, v in qs:
+            kl = k.lower()
+            if kl in TRACKING_PARAMS:
+                continue
+            if kl == "from" and v.lower() in ("singlemessage", "timeline", "groupmessage", "appmessage"):
+                continue
+            cleaned_qs.append((k, v))
         new_query = urllib.parse.urlencode(cleaned_qs)
         cleaned = urllib.parse.urlunparse((
             parsed.scheme,
@@ -68,14 +96,15 @@ def categorize_url(url: str) -> str:
     return "other"
 
 
-def extract_links_and_resources(messages: list[dict]) -> list[dict]:
+def extract_links_and_resources(messages: list) -> list[dict]:
     """
     从一组消息中提取资源链接并按 clean_url 去重聚合。
+    兼容 dict 与 sqlite3.Row。
     """
     url_map: dict[str, dict] = {}
 
     for msg in messages:
-        text = msg.get("text", "") or ""
+        text = _get_val(msg, ["text", "msg_text"], "") or ""
         if not text or ("http://" not in text and "https://" not in text):
             continue
 
@@ -83,10 +112,10 @@ def extract_links_and_resources(messages: list[dict]) -> list[dict]:
         if not matches:
             continue
 
-        sender_name = msg.get("sender_name") or msg.get("sender") or "未知群友"
-        sender_qq = str(msg.get("sender") or "")
-        ts = int(msg.get("timestamp") or 0)
-        seq = int(msg.get("seq") or 0)
+        sender_name = _get_val(msg, ["sender_name", "name", "disp_name"], "未知群友")
+        sender_qq = str(_get_val(msg, ["sender_qq", "sender", "sender_uid"], ""))
+        ts = int(_get_val(msg, ["ts", "timestamp"], 0) or 0)
+        seq = int(_get_val(msg, ["seq", "msg_seq"], 0) or 0)
 
         for raw_url in matches:
             cleaned = clean_url(raw_url)
@@ -125,12 +154,10 @@ def extract_links_and_resources(messages: list[dict]) -> list[dict]:
                 if ts > entry["last_timestamp"]:
                     entry["last_timestamp"] = ts
 
-    # 格式化输出列表，优先按分享次数倒序，再按最新时间倒序
     results = list(url_map.values())
     results.sort(key=lambda x: (x["share_count"], x["last_timestamp"]), reverse=True)
 
     for item in results:
-        # 挑选最长/最具有描述性的 context
         best_ctx = max(item["contexts"], key=len) if item["contexts"] else ""
         item["context"] = best_ctx
         item["last_time"] = datetime.fromtimestamp(item["last_timestamp"]).strftime("%m-%d %H:%M") if item["last_timestamp"] else ""
@@ -146,12 +173,10 @@ def format_links_markdown(links: list[dict]) -> str:
     lines = ["## 📦 群内资源与链接合辑\n"]
     lines.append(f"> 共沉淀 **{len(links)}** 个高价值链接与资源条目。\n")
 
-    # 按类别分组
     by_cat: dict[str, list[dict]] = {}
     for item in links:
         by_cat.setdefault(item["category"], []).append(item)
 
-    # 优先展示代码、文章、网盘、文档、视频
     preferred_order = ["code", "article", "doc", "drive", "video", "other"]
     for cat in preferred_order:
         items = by_cat.get(cat)

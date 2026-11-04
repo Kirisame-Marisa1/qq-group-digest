@@ -65,6 +65,7 @@ def ocr_image(image_path: str) -> str:
     """
     使用 Windows 原生 OCR 识别单个本地图片。
     如果文件不存在、损坏或处于非 Windows 环境，静默降级返回空字符串。
+    在 Windows 下使用 CREATE_NO_WINDOW 隐藏控制台弹窗。
     """
     if not image_path or not os.path.isfile(image_path):
         return ""
@@ -80,14 +81,17 @@ def ocr_image(image_path: str) -> str:
             "-File", PS1_OCR_SCRIPT,
             "-ImagePath", os.path.abspath(image_path)
         ]
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            timeout=15
-        )
+        sp_kwargs = {
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "ignore",
+            "timeout": 15
+        }
+        if sys.platform == "win32":
+            sp_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+        res = subprocess.run(cmd, **sp_kwargs)
         if res.returncode == 0:
             return res.stdout.strip()
         return ""
@@ -105,7 +109,6 @@ def index_media_ocr(db_path: str, media_dir: str, limit: int = 50) -> int:
     conn = sqlite3.connect(db_path)
     init_ocr_table(conn)
 
-    # 查出已存在的 md5
     cursor = conn.cursor()
     cursor.execute("SELECT md5 FROM media_ocr")
     existing_md5s = {row[0] for row in cursor.fetchall()}
@@ -115,7 +118,6 @@ def index_media_ocr(db_path: str, media_dir: str, limit: int = 50) -> int:
     for fname in os.listdir(media_dir):
         stem, ext = os.path.splitext(fname)
         if ext.lower() in valid_exts:
-            # 兼容 <md5>.<ext> 命名
             md5_val = stem.lower()
             if md5_val not in existing_md5s:
                 candidates.append((md5_val, os.path.join(media_dir, fname)))
