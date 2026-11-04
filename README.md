@@ -142,6 +142,20 @@ python scripts/ntqq_report.py --c2c --list-groups
 # 班群模式：重点速览在前 + 逐群不限篇幅
 python scripts/ntqq_report.py --class-mode --days 7
 
+# 📦 资源合辑与待办决议雷达（自动抽取外链/文档与 @某人/截止时间任务）
+python scripts/ntqq_report.py --group <群号> --days 7 --links --actions
+
+# 📷 本地 WinRT 零依赖 OCR 识图（建立图片全文索引并在 --search 中联动图片文字）
+python scripts/ntqq_media.py --groups all --days 30 --ocr
+python scripts/ntqq_report.py --search "课程表" --days 30
+
+# 📓 Obsidian 第二大脑导出（标准 Frontmatter + Callouts + 双链 [[...]] + chat-qq 气泡）
+python scripts/ntqq_report.py --group <群号> --days 7 --export obsidian --obsidian-vault D:/MyObsidianVault
+
+# 🕸️ 群聊社交互动网络分析 & ✨ 群聊时光机回忆录 (Chat Wrapped)
+python scripts/ntqq_report.py --group <群号> --days 30 --social
+python scripts/ntqq_report.py --group <群号> --days 365 --wrapped --html ../output/wrapped.html
+
 # 可溯源结构化报告（4 大标准化板块：热点话题 Top N、重要资源归档、金句高光、活跃度微画像 + 精确 [Ref: #seq] 锚点）
 python scripts/ntqq_report.py --group <群号> --days 7 --structured --out ../output/digest_structured.md
 
@@ -207,6 +221,13 @@ python tools/purge_filled.py                                                  # 
 - **群变更登记**：把当前 `group_list` 与上一次的记录比对，报出 **新入群 / 已退群 /
   退群后回归 / 群改名**。首次只建基线；若一次扫描读到的群数掉了一半以上，判为库没读出来，
   **挂起退群判定**，避免批量误报
+
+### 生态与智能分析层（新升级）
+- **群内资源与外链归集（`ntqq_links.py`）**：智能抽取 URL、GitHub 仓库、技术文章、影音视频、网盘与在线文档，自动清洗跟踪参数（`utm_*`, `spm_*`），统计分享频次与推荐人。
+- **待办与决议雷达（`ntqq_action_items.py`）**：规则与启发式识别 `@某人`、截止时间（DDL）、任务动词与会议/公告决议，过滤日常闲聊误报，支持 `--actions`。
+- **Windows 原生 OCR 本地识图检索（`ntqq_ocr.py`）**：零依赖调用 WinRT `Windows.Media.Ocr`，离线识别图片文字存入 `media_ocr` 表，`--search` 联动搜索图片内容。
+- **Obsidian 个人知识库导出（`ntqq_obsidian.py`）**：支持 `--export obsidian`，输出规范 YAML 元数据、Callout 重点卡片、双向链接 `[[...]]` 与 `obsidian-chat-view-qq` 原生气泡代码块。
+- **社交互动拓扑与群聊时光机（`ntqq_social.py` / `ntqq_wrapped.py`）**：计算 `@` 互动、引用回复与轮转对话；生成年度/阶段 Chat Wrapped 回忆录与独立 HTML 故事卡片。
 
 ### 报告层
 - **零依赖交互式 HTML 可视化简报（`ntqq_html.py`）**：传 `--out <path>.md`（或 `--html <path>.html`）时自动同目录生成纯本地离线单文件 `.html` 可视化简报（GUI 亦支持一键打开），内置五种精美视图一键切换：

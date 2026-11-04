@@ -70,6 +70,11 @@ python 'scripts\ntqq_report.py' --group <群号> --days 2 --out '...'
 python 'scripts\ntqq_report.py' --search <关键词> --days 7 --out '...'
 python 'scripts\ntqq_report.py' --search '关键词A 关键词B' --days 7 --out '...'
 python 'scripts\ntqq_report.py' --group <群号> --days 7 --structured --out '...'
+python 'scripts\ntqq_report.py' --group <群号> --days 7 --links --actions --out '...'
+python 'scripts\ntqq_report.py' --group <群号> --days 7 --export obsidian --obsidian-vault 'D:\MyVault'
+python 'scripts\ntqq_report.py' --group <群号> --days 30 --social
+python 'scripts\ntqq_report.py' --group <群号> --days 365 --wrapped --html '<root>\output\wrapped.html'
+python 'scripts\ntqq_media.py' --groups all --days 30 --ocr
 python 'scripts\ntqq_report.py' --list-groups
 ```
 
