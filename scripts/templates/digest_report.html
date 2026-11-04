@@ -1599,9 +1599,13 @@ mark.hl {
     <div class="toolbar">
       <div class="mode-switch" id="view-switcher">
         <button class="mode-btn active" data-view="claude" onclick="switchView('claude')">✨ Claude 视窗</button>
-        <button class="mode-btn" data-view="monet" onclick="switchView('monet')">🌸 莫奈纸雕</button>
+        <button class="mode-btn" data-view="links" onclick="switchView('links')">🔗 资源链接库</button>
+        <button class="mode-btn" data-view="actions" onclick="switchView('actions')">📋 待办与决策</button>
+        <button class="mode-btn" data-view="social" onclick="switchView('social')">🕸️ 社交图谱</button>
+        <button class="mode-btn" data-view="wrapped" onclick="switchView('wrapped')">🎁 群聊 Wrapped</button>
         <button class="mode-btn" data-view="bento" onclick="switchView('bento')">🍱 Bento 交互看板</button>
         <button class="mode-btn" data-view="paper" onclick="switchView('paper')">📰 纸上日报视图</button>
+        <button class="mode-btn" data-view="monet" onclick="switchView('monet')">🌸 莫奈纸雕</button>
         <button class="mode-btn" data-view="markdown" onclick="switchView('markdown')">📄 Markdown 原文</button>
       </div>
       <button class="icon-btn" onclick="toggleTheme()" id="theme-btn">☀️ 浅色</button>
@@ -2509,6 +2513,26 @@ mark.hl {
         '<input type="search" class="claude-search-input" placeholder="过滤群聊、话题、金句..." value="' + esc(state.claudeSearchQuery) + '" oninput="onClaudeSearch(this.value)">' +
       '</div>';
 
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--claude-text-sub);margin:14px 0 8px 4px">智能洞察 (ECOSYSTEM)</div>' +
+      '<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px">' +
+        '<button class="claude-group-item' + (state.view === 'links' ? ' active' : '') + '" onclick="switchView(\'links\')">' +
+          '<span style="display:flex;align-items:center;gap:8px"><span>🔗</span><span>资源与链接库</span></span>' +
+          '<span class="claude-group-pill" style="color:var(--cyan)">' + (DATA.links ? DATA.links.length : 0) + '</span>' +
+        '</button>' +
+        '<button class="claude-group-item' + (state.view === 'actions' ? ' active' : '') + '" onclick="switchView(\'actions\')">' +
+          '<span style="display:flex;align-items:center;gap:8px"><span>📋</span><span>待办任务与决策</span></span>' +
+          '<span class="claude-group-pill" style="color:var(--amber)">' + (DATA.actions ? ((DATA.actions.actions || []).length + (DATA.actions.decisions || []).length) : 0) + '</span>' +
+        '</button>' +
+        '<button class="claude-group-item' + (state.view === 'social' ? ' active' : '') + '" onclick="switchView(\'social\')">' +
+          '<span style="display:flex;align-items:center;gap:8px"><span>🕸️</span><span>社交互动关系图谱</span></span>' +
+          '<span class="claude-group-pill" style="color:var(--purple)">' + (DATA.social_graph ? (DATA.social_graph.nodes || []).length : 0) + '</span>' +
+        '</button>' +
+        '<button class="claude-group-item' + (state.view === 'wrapped' ? ' active' : '') + '" onclick="switchView(\'wrapped\')">' +
+          '<span style="display:flex;align-items:center;gap:8px"><span>🎁</span><span>群聊 Wrapped 回顾</span></span>' +
+          '<span class="claude-group-pill" style="color:var(--rose)">专属</span>' +
+        '</button>' +
+      '</div>';
+
     html += '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--claude-text-sub);margin:14px 0 8px 4px">群组列表 (GROUPS)</div>' +
       '<div class="claude-group-list">' +
         '<button class="claude-group-item' + (state.claudeActiveGroup === '__ALL__' ? ' active' : '') + '" onclick="selectClaudeGroup(\'__ALL__\')">' +
@@ -3228,6 +3252,368 @@ mark.hl {
     '</div>';
   }
 
+    function renderLinksView() {
+    const links = DATA.links || [];
+    const count = links.length;
+    let html = '<div class="section-card">' +
+      '<div class="section-head">' +
+        '<div>' +
+          '<div class="section-title">🔗 群聊资源与链接汇总库</div>' +
+          '<div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">已自动剔除追踪参数（如 spm_id、utm_source），按代码、网盘、影音、资讯等类型智能分类</div>' +
+        '</div>' +
+        '<div style="font-size:13px;color:var(--accent);font-weight:700">共收录 ' + count + ' 条有效资源</div>' +
+      '</div>';
+
+    if (!count) {
+      html += '<div style="padding:40px;text-align:center;color:var(--text-muted)">本期暂未提取到有效的外部网址或资源链接</div></div>';
+      return html;
+    }
+
+    html += '<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">' +
+      '<input type="text" id="links-search" placeholder="🔍 搜索链接、域名、分享者或上下文..." oninput="onLinksSearch(this.value)" ' +
+        'style="flex:1;min-width:240px;padding:8px 14px;background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px">' +
+      '<div id="links-cat-btns" style="display:flex;gap:6px;flex-wrap:wrap">' +
+        '<button class="icon-btn active-filter" onclick="filterLinksCategory(\'all\', this)">全部 (' + count + ')</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'code\', this)">🛠️ 代码与技术</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'cloud\', this)">💾 网盘下载</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'media\', this)">🎬 影音娱乐</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'news\', this)">📰 资讯社媒</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'other\', this)">🌐 其它网页</button>' +
+      '</div>' +
+    '</div>';
+
+    html += '<div id="links-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:14px">';
+    links.forEach(l => {
+      const catBadge = {
+        'code': '<span class="pill pill-cyan">🛠️ 代码与技术</span>',
+        'cloud': '<span class="pill pill-emerald">💾 网盘文件</span>',
+        'media': '<span class="pill pill-purple">🎬 影音娱乐</span>',
+        'news': '<span class="pill pill-amber">📰 资讯社交</span>',
+        'doc': '<span class="pill pill-blue">📄 文档资料</span>',
+      }[l.category] || '<span class="pill pill-slate">🌐 其它</span>';
+
+      const senders = (l.senders || []).join(', ') || '群友';
+      const cleanUrl = esc(l.clean_url || l.raw_url || '');
+      const domain = esc(l.domain || '');
+      const context = esc(l.context || (l.contexts && l.contexts[0]) || '');
+      const timeStr = esc(l.last_time || '');
+      const shareBadge = (l.share_count > 1) ? '<span class="pill pill-rose" style="font-size:11px">分享 ' + l.share_count + ' 次</span>' : '';
+
+      html += '<div class="link-card-item" data-cat="' + esc(l.category || 'other') + '" data-text="' + cleanUrl.toLowerCase() + ' ' + domain.toLowerCase() + ' ' + esc(senders).toLowerCase() + ' ' + context.toLowerCase() + '" ' +
+        'style="background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          catBadge + shareBadge +
+          '<span style="font-size:11.5px;color:var(--text-muted)">' + timeStr + '</span>' +
+        '</div>' +
+        '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" style="font-size:13px;color:var(--accent);font-weight:600;word-break:break-all;text-decoration:none;line-height:1.4">' +
+          cleanUrl +
+        '</a>' +
+        '<div style="font-size:11.5px;color:var(--text-sub);display:flex;align-items:center;gap:6px">' +
+          '<span>🌐 ' + domain + '</span> · <span>👤 ' + esc(senders) + '</span>' +
+        '</div>' +
+        (context ? '<div style="font-size:12px;color:var(--text-muted);background:var(--card);padding:6px 10px;border-radius:6px;font-style:italic">“' + context + '”</div>' : '') +
+        '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:auto">' +
+          '<button class="icon-btn" style="padding:3px 10px;font-size:11.5px" onclick="copyText(\'' + cleanUrl + '\', this)">📋 复制链接</button>' +
+          '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" class="icon-btn" style="padding:3px 10px;font-size:11.5px;text-decoration:none">↗ 打开</a>' +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderActionsView() {
+    const actData = DATA.actions || { actions: [], decisions: [] };
+    const actions = actData.actions || [];
+    const decisions = actData.decisions || [];
+
+    let html = '<div class="section-card">' +
+      '<div class="section-head">' +
+        '<div>' +
+          '<div class="section-title">📋 群聊待办任务与决策决议追踪</div>' +
+          '<div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">基于 NLP 动词、截止期限 (DDL) 与 @ 责任人自动提取，支持即时打勾标记</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px">' +
+          '<span class="pill pill-amber" style="font-size:12px">⏳ 待办事项: ' + actions.length + ' 项</span>' +
+          '<span class="pill pill-emerald" style="font-size:12px">⚖️ 关键决议: ' + decisions.length + ' 条</span>' +
+        '</div>' +
+      '</div>';
+
+    if (decisions.length) {
+      html += '<div style="margin-bottom:24px">' +
+        '<div style="font-size:14px;font-weight:700;color:var(--amber);margin-bottom:10px;display:flex;align-items:center;gap:6px">' +
+          '<span>⚖️ 达成共识与团队决议</span>' +
+        '</div>' +
+        '<div style="display:grid;gap:10px">';
+      decisions.forEach(d => {
+        html += '<div style="background:var(--amber-soft);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:12px 16px;display:flex;align-items:flex-start;gap:10px">' +
+          '<span style="font-size:16px">📌</span>' +
+          '<div style="flex:1">' +
+            '<div style="font-size:13.5px;color:var(--text);font-weight:600">' + esc(d.decision || d.raw_text || '') + '</div>' +
+            '<div style="font-size:11.5px;color:var(--text-sub);margin-top:4px">' + esc(d.sender_name || '群友') + ' · ' + esc(d.time_str || '') + '</div>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '<div>' +
+      '<div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:10px;display:flex;align-items:center;gap:6px">' +
+        '<span>📌 待执行行动项清单 (Action Items)</span>' +
+      '</div>';
+
+    if (!actions.length) {
+      html += '<div style="padding:30px;text-align:center;color:var(--text-muted)">本期暂未提取到明确的待办任务或截止日期要求</div>';
+    } else {
+      html += '<div style="display:flex;flex-direction:column;gap:10px">';
+      actions.forEach((a, idx) => {
+        const assignee = a.assignee ? '<span class="pill pill-purple" style="font-weight:700">' + esc(a.assignee) + '</span>' : '<span class="pill pill-slate">@待认领</span>';
+        const ddl = a.deadline ? '<span class="pill pill-rose" style="font-weight:700">⏳ ' + esc(a.deadline) + '</span>' : '';
+        const taskText = esc(a.task || a.raw_text || '');
+        const sender = esc(a.sender_name || '群友');
+        const timeStr = esc(a.time_str || '');
+
+        html += '<div class="action-item-row" id="action-row-' + idx + '" style="background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:12px 16px;display:flex;align-items:center;gap:14px;transition:opacity 0.2s">' +
+          '<input type="checkbox" onchange="toggleActionDone(' + idx + ', this.checked)" style="width:18px;height:18px;cursor:pointer;accent-color:var(--emerald)">' +
+          '<div style="flex:1">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">' +
+              assignee + ddl +
+              '<span style="font-size:11.5px;color:var(--text-muted)">' + sender + ' · ' + timeStr + '</span>' +
+            '</div>' +
+            '<div class="task-desc" style="font-size:13.5px;color:var(--text);font-weight:500">' + taskText + '</div>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderSocialView() {
+    const soc = DATA.social_graph || { nodes: [], edges: [], top_dyads: [] };
+    const nodes = soc.nodes || [];
+    const edges = soc.edges || [];
+    const topDyads = soc.top_dyads || [];
+
+    let html = '<div class="section-card">' +
+      '<div class="section-head">' +
+        '<div>' +
+          '<div class="section-title">🕸️ 群聊社交互动关系图谱</div>' +
+          '<div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">基于消息连续回复、@ 提及与引用对话计算群友间亲密互动关系与网络拓扑</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:12px">' +
+          '<span class="pill pill-cyan">活跃成员: ' + nodes.length + ' 人</span>' +
+          '<span class="pill pill-purple">互动连线: ' + edges.length + ' 条</span>' +
+        '</div>' +
+      '</div>';
+
+    if (topDyads.length) {
+      html += '<div style="margin-bottom:24px">' +
+        '<div style="font-size:14px;font-weight:700;color:var(--purple);margin-bottom:12px;display:flex;align-items:center;gap:6px">' +
+          '<span>🏆 最佳群友搭档排行榜 (Top Dyads)</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(280px, 1fr));gap:12px">';
+      const maxDyadWeight = topDyads[0].weight || 1;
+      topDyads.slice(0, 12).forEach((d, i) => {
+        const pct = Math.round((d.weight / maxDyadWeight) * 100);
+        const pairName = esc(d.pair || (d.member_a + ' ⇄ ' + d.member_b));
+        html += '<div style="background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:6px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center">' +
+            '<span style="font-size:13px;font-weight:700;color:var(--text)">' + (i < 3 ? ['🥇', '🥈', '🥉'][i] + ' ' : '') + pairName + '</span>' +
+            '<span class="pill pill-purple" style="font-size:11px">' + d.weight + ' 次互动</span>' +
+          '</div>' +
+          '<div style="height:6px;background:var(--card);border-radius:3px;overflow:hidden">' +
+            '<div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg, var(--purple), var(--cyan));border-radius:3px"></div>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '<div>' +
+      '<div style="font-size:14px;font-weight:700;color:var(--cyan);margin-bottom:10px;display:flex;align-items:center;gap:6px">' +
+        '<span>🌐 群聊核心互动拓扑网络</span>' +
+      '</div>';
+
+    if (!nodes.length) {
+      html += '<div style="padding:40px;text-align:center;color:var(--text-muted)">本期暂未计算出足够的群友互动节点</div>';
+    } else {
+      html += '<div style="background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;padding:16px;text-align:center;overflow:hidden">' +
+        '<div id="social-svg-container" style="width:100%;height:460px;position:relative"></div>' +
+      '</div>';
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderSocialSvg() {
+    const container = document.getElementById('social-svg-container');
+    if (!container) return;
+    const soc = DATA.social_graph || { nodes: [], edges: [] };
+    const rawNodes = soc.nodes || [];
+    const edges = soc.edges || [];
+    if (!rawNodes.length) return;
+
+    const displayNodes = rawNodes.slice(0, 24);
+    const nodeMap = {};
+    const W = container.clientWidth || 800;
+    const H = 460;
+    const cx = W / 2;
+    const cy = H / 2;
+    const R = Math.min(cx, cy) - 60;
+    const N = displayNodes.length;
+
+    displayNodes.forEach((n, idx) => {
+      const angle = (2 * Math.PI * idx) / N - Math.PI / 2;
+      const x = cx + R * Math.cos(angle);
+      const y = cy + R * Math.sin(angle);
+      const nid = n.id || n.name || String(idx);
+      nodeMap[nid] = { ...n, x, y, angle };
+    });
+
+    let svg = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" style="max-width:100%;height:auto;user-select:none">';
+
+    edges.forEach(e => {
+      const src = nodeMap[e.source];
+      const tgt = nodeMap[e.target];
+      if (src && tgt) {
+        const strokeW = Math.min(Math.max(1, e.weight * 0.8), 5);
+        const strokeOp = Math.min(0.25 + e.weight * 0.05, 0.85);
+        svg += '<line x1="' + src.x + '" y1="' + src.y + '" x2="' + tgt.x + '" y2="' + tgt.y + '" ' +
+          'stroke="#a855f7" stroke-width="' + strokeW + '" stroke-opacity="' + strokeOp + '" />';
+      }
+    });
+
+    displayNodes.forEach(n => {
+      const nid = n.id || n.name;
+      const pos = nodeMap[nid];
+      if (!pos) return;
+      const color = hashColor(n.name || nid);
+      const radius = Math.min(12 + (n.weight || 1) * 0.35, 22);
+      svg += '<g class="social-node-group" style="cursor:pointer" title="' + esc(n.name || nid) + ' (' + (n.weight || 0) + '条消息)">' +
+        '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="' + color + '" stroke="var(--bg-elev)" stroke-width="2.5" />' +
+        '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" fill="#ffffff" font-size="11" font-weight="700" text-anchor="middle" pointer-events="none">' +
+          esc((n.name || nid).substring(0, 2)) +
+        '</text>' +
+        '<text x="' + pos.x + '" y="' + (pos.y + radius + 14) + '" fill="var(--text)" font-size="11" font-weight="600" text-anchor="middle" pointer-events="none">' +
+          esc((n.name || nid).substring(0, 6)) +
+        '</text>' +
+      '</g>';
+    });
+
+    svg += '</svg>';
+    container.innerHTML = svg;
+  }
+
+  function renderWrappedView() {
+    const w = DATA.wrapped || {};
+    let html = '<div class="section-card" style="background:linear-gradient(135deg, rgba(30,27,75,0.4), rgba(15,23,42,0.6));border-color:rgba(168,85,247,0.3)">' +
+      '<div class="section-head">' +
+        '<div>' +
+          '<div class="section-title" style="font-size:20px">🎁 QQ 群聊年度/周期回顾 · Wrapped</div>' +
+          '<div style="font-size:13px;color:var(--text-sub);margin-top:4px">' + esc(w.period_name || '本期群聊回顾') + ' · 你的专属社群社交图鉴</div>' +
+        '</div>' +
+        '<div>' +
+          '<button class="icon-btn" onclick="openCompanionWrapped()" style="background:var(--purple);color:#fff;font-weight:700;padding:8px 16px;border-radius:8px">🚀 打开全屏动效独立大屏</button>' +
+        '</div>' +
+      '</div>';
+
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:16px;margin-bottom:20px">' +
+      '<div style="background:var(--bg-elev);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:18px">' +
+        '<div style="font-size:24px">👑</div>' +
+        '<div style="font-size:12px;color:var(--amber);font-weight:700;text-transform:uppercase;margin-top:6px">话痨之王</div>' +
+        '<div style="font-size:18px;font-weight:800;color:var(--text);margin-top:4px">' + esc(w.top_speaker || '无') + '</div>' +
+        '<div style="font-size:12.5px;color:var(--text-sub);margin-top:2px">累计发言 ' + (w.top_speaker_count || 0) + ' 条</div>' +
+      '</div>' +
+      '<div style="background:var(--bg-elev);border:1px solid rgba(168,85,247,0.3);border-radius:12px;padding:18px">' +
+        '<div style="font-size:24px">🦉</div>' +
+        '<div style="font-size:12px;color:var(--purple);font-weight:700;text-transform:uppercase;margin-top:6px">深夜猫头鹰 (0:00-5:00)</div>' +
+        '<div style="font-size:18px;font-weight:800;color:var(--text);margin-top:4px">' + esc(w.night_owl_speaker || '无') + '</div>' +
+        '<div style="font-size:12.5px;color:var(--text-sub);margin-top:2px">深夜灵感涌动，最常与星月对话</div>' +
+      '</div>' +
+      '<div style="background:var(--bg-elev);border:1px solid rgba(16,185,129,0.3);border-radius:12px;padding:18px">' +
+        '<div style="font-size:24px">🌅</div>' +
+        '<div style="font-size:12px;color:var(--emerald);font-weight:700;text-transform:uppercase;margin-top:6px">晨曦早起鸟 (5:00-8:00)</div>' +
+        '<div style="font-size:18px;font-weight:800;color:var(--text);margin-top:4px">' + esc(w.early_bird_speaker || '无') + '</div>' +
+        '<div style="font-size:12.5px;color:var(--text-sub);margin-top:2px">群里的第一缕阳光播报员</div>' +
+      '</div>' +
+      '<div style="background:var(--bg-elev);border:1px solid rgba(56,189,248,0.3);border-radius:12px;padding:18px">' +
+        '<div style="font-size:24px">🔥</div>' +
+        '<div style="font-size:12px;color:var(--accent);font-weight:700;text-transform:uppercase;margin-top:6px">最燃爆破纪录的一天</div>' +
+        '<div style="font-size:18px;font-weight:800;color:var(--text);margin-top:4px">' + esc(w.peak_day || '无') + '</div>' +
+        '<div style="font-size:12.5px;color:var(--text-sub);margin-top:2px">单日消息吞吐量达 ' + (w.peak_day_count || 0) + ' 条</div>' +
+      '</div>' +
+    '</div>';
+
+    if (w.speakers_top5 && w.speakers_top5.length) {
+      html += '<div style="background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:20px">' +
+        '<div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px">🏅 群聊热聊先锋 Top 5</div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">';
+      const maxSpk = w.speakers_top5[0][1] || 1;
+      w.speakers_top5.forEach((spk, idx) => {
+        const pct = Math.round((spk[1] / maxSpk) * 100);
+        html += '<div style="display:flex;align-items:center;gap:12px">' +
+          '<span style="font-size:14px;font-weight:800;width:24px;color:var(--accent)">#' + (idx + 1) + '</span>' +
+          '<span style="width:140px;font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(spk[0]) + '</span>' +
+          '<div style="flex:1;height:8px;background:var(--card);border-radius:4px;overflow:hidden">' +
+            '<div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg, var(--accent), var(--purple));border-radius:4px"></div>' +
+          '</div>' +
+          '<span style="font-size:12px;color:var(--text-sub);width:60px;text-align:right">' + spk[1] + ' 条</span>' +
+        '</div>';
+      });
+      html += '</div></div>';
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  window.filterLinksCategory = function(cat, btn) {
+    document.querySelectorAll('#links-cat-btns .icon-btn').forEach(b => b.classList.remove('active-filter'));
+    if (btn) btn.classList.add('active-filter');
+    const items = document.querySelectorAll('.link-card-item');
+    items.forEach(el => {
+      const matchCat = (cat === 'all' || el.getAttribute('data-cat') === cat);
+      el.style.display = matchCat ? '' : 'none';
+    });
+  };
+
+  window.onLinksSearch = function(q) {
+    const val = (q || '').trim().toLowerCase();
+    const items = document.querySelectorAll('.link-card-item');
+    items.forEach(el => {
+      const txt = el.getAttribute('data-text') || '';
+      el.style.display = (!val || txt.includes(val)) ? '' : 'none';
+    });
+  };
+
+  window.toggleActionDone = function(idx, checked) {
+    const row = document.getElementById('action-row-' + idx);
+    if (!row) return;
+    const desc = row.querySelector('.task-desc');
+    if (desc) {
+      desc.style.textDecoration = checked ? 'line-through' : 'none';
+      desc.style.opacity = checked ? '0.5' : '1';
+    }
+  };
+
+  window.copyText = function(text, btn) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        const old = btn.textContent;
+        btn.textContent = '✅ 已复制';
+        setTimeout(() => { btn.textContent = old; }, 2000);
+      });
+    }
+  };
+
+  window.openCompanionWrapped = function() {
+    const curPath = window.location.href;
+    const wrappedPath = curPath.replace('简报', 'Wrapped');
+    window.open(wrappedPath, '_blank');
+  };
+
   function render() {
     renderHeader();
     const root = document.getElementById('app-root');
@@ -3236,6 +3622,15 @@ mark.hl {
       root.innerHTML = renderClaudeView();
       renderClaudeSidebar();
       renderClaudeContent();
+    } else if (state.view === 'links') {
+      root.innerHTML = renderLinksView();
+    } else if (state.view === 'actions') {
+      root.innerHTML = renderActionsView();
+    } else if (state.view === 'social') {
+      root.innerHTML = renderSocialView();
+      renderSocialSvg();
+    } else if (state.view === 'wrapped') {
+      root.innerHTML = renderWrappedView();
     } else if (state.view === 'monet') {
       root.innerHTML = renderMonetView();
     } else if (state.view === 'markdown') {
@@ -3251,8 +3646,7 @@ mark.hl {
       }
     }
   }
-
-  render();
+render();
 })();
 </script>
 </body>

@@ -90,6 +90,10 @@ def _extract_focus_items(allrows, class_groups, fmt_fn, kw_fn, anon_map=None,
         t = (r['text'] or '').strip()
         if not t:
             continue
+        # ??????????? JSON????? {align:center,...}??????
+        r_kind = r['kind'] if (hasattr(r, 'keys') and 'kind' in r.keys()) else (r.get('kind', '') if hasattr(r, 'get') else '')
+        if (t.startswith('{') and ('items' in t or 'align' in t or 'prompt' in t)) or r_kind == 'system':
+            continue
         s = 0
         tags = []
         gcode = r['group_code']
@@ -536,6 +540,12 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
     except Exception:
         soc_graph = {'nodes': [], 'edges': [], 'top_dyads': []}
 
+    try:
+        from ntqq_wrapped import build_chat_wrapped
+        wrapped_data = build_chat_wrapped(sanitized_rows_for_extract, period_name=meta_info.get('window_str') or '????')
+    except Exception:
+        wrapped_data = {}
+
     return {
         'mode': 'digest',
         'meta': meta_info,
@@ -561,6 +571,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
         'links': links_data,
         'actions': actions_data,
         'social_graph': soc_graph,
+        'wrapped': wrapped_data,
         'groups': groups_data,
         'markdown': markdown_text,
     }

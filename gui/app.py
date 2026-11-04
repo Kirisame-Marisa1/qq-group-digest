@@ -374,6 +374,45 @@ class QQToolGUI(ctk.CTk):
             **btn_style,
         ).pack(side="right")
 
+        row_c = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        row_c.pack(fill="x", pady=(10, 0))
+        ctk.CTkButton(
+            row_c,
+            text="🎁 群聊 Wrapped 回顾",
+            command=self.run_wrapped_feature,
+            fg_color="#8B5CF6",
+            hover_color="#7C3AED",
+            text_color="#FFFFFF",
+            **btn_style,
+        ).pack(side="left")
+        ctk.CTkButton(
+            row_c,
+            text="📓 导出 Obsidian 第二大脑",
+            command=self.run_obsidian_feature,
+            fg_color="#6366F1",
+            hover_color="#4F46E5",
+            text_color="#FFFFFF",
+            **btn_style,
+        ).pack(side="left", padx=8)
+        ctk.CTkButton(
+            row_c,
+            text="🔗 提取链接与待办",
+            command=self.run_links_actions_feature,
+            fg_color="#0EA5E9",
+            hover_color="#0284C7",
+            text_color="#FFFFFF",
+            **btn_style,
+        ).pack(side="left", padx=8)
+        ctk.CTkButton(
+            row_c,
+            text="🔍 本地 OCR 搜图识图",
+            command=self.run_ocr_feature,
+            fg_color="#10B981",
+            hover_color="#059669",
+            text_color="#FFFFFF",
+            **btn_style,
+        ).pack(side="left", padx=8)
+
         # Status Bar
         status_frame = ctk.CTkFrame(self, fg_color="transparent")
         status_frame.grid(row=3, column=0, padx=20, pady=(10, 0), sticky="ew")
@@ -1028,4 +1067,88 @@ class QQToolGUI(ctk.CTk):
             con.close()
         except Exception as e:
             self.log(f"❌ 总结时出错: {e}")
+
+    def run_wrapped_feature(self):
+        if not self.save_config():
+            return
+        days = self.get_selected_days()
+        label_days = self.day_label(days)
+        out_dir = self.output_entry.get().replace("\\", "/")
+        os.makedirs(out_dir, exist_ok=True)
+        wrapped_file = os.path.join(out_dir, f"我的群聊Wrapped_{label_days}.html")
+        md_file = os.path.join(out_dir, f"我的群聊Wrapped_{label_days}.md")
+        cmd = [
+            os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
+            "--wrapped",
+            "--hours",
+            str(days * 24),
+            "--out",
+            md_file,
+        ]
+        def _task():
+            code = self.run_command(cmd, f"生成群聊 Wrapped 回顾（{label_days}）")
+            if code == 0 and os.path.exists(wrapped_file):
+                import webbrowser
+                webbrowser.open(os.path.abspath(wrapped_file))
+                self.log(f"🎉 Wrapped 回顾已生成并在浏览器中打开: {wrapped_file}")
+        self._bg(_task)
+
+    def run_obsidian_feature(self):
+        if not self.save_config():
+            return
+        out_dir = self.output_entry.get().replace("\\", "/")
+        os.makedirs(out_dir, exist_ok=True)
+        obsidian_dir = os.path.join(out_dir, "obsidian")
+        cmd = [
+            os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
+            "--export",
+            "obsidian",
+            "--obsidian-vault",
+            obsidian_dir,
+        ]
+        def _task():
+            code = self.run_command(cmd, "导出至 Obsidian 第二大脑")
+            if code == 0 and os.path.exists(obsidian_dir):
+                self.log(f"🎉 已成功导出 Obsidian 知识库至: {obsidian_dir}")
+                os.startfile(obsidian_dir)
+        self._bg(_task)
+
+    def run_links_actions_feature(self):
+        if not self.save_config():
+            return
+        days = self.get_selected_days()
+        label_days = self.day_label(days)
+        out_dir = self.output_entry.get().replace("\\", "/")
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, f"我的群聊简报_{label_days}.md")
+        html_file = os.path.splitext(out_file)[0] + ".html"
+        cmd = [
+            os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
+            "--active",
+            "--hours",
+            str(days * 24),
+            "--brief",
+            "--links",
+            "--actions",
+            "--social",
+            "--out",
+            out_file,
+        ]
+        def _task():
+            code = self.run_command(cmd, f"提取资源链接与待办决策（{label_days}）")
+            if code == 0 and os.path.exists(html_file):
+                self.last_html_path = html_file
+                import webbrowser
+                webbrowser.open(os.path.abspath(html_file))
+        self._bg(_task)
+
+    def run_ocr_feature(self):
+        cmd = [
+            os.path.join(SCRIPTS_DIR, "ntqq_ocr.py"),
+            "--batch-size",
+            "50",
+        ]
+        def _task():
+            self.run_command(cmd, "WinRT 智能本地 OCR 识图索引构建")
+        self._bg(_task)
 

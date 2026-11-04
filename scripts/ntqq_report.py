@@ -1127,21 +1127,24 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 except Exception as e:
                     log_debug('保存 micro_digests 异常: %s' % e)
 
-        if getattr(a, 'links', False):
+        inc_links = getattr(a, 'links', False) or getattr(a, 'brief', False)
+        if inc_links:
             from ntqq_links import extract_links_and_resources, format_links_markdown
             all_target_rows = [r for item in prepared for r in item[4]]
             links_extracted = extract_links_and_resources(all_target_rows)
             if links_extracted:
                 out.append(format_links_markdown(links_extracted))
 
-        if getattr(a, 'actions', False) or getattr(a, 'class_mode', False):
+        inc_actions = getattr(a, 'actions', False) or getattr(a, 'class_mode', False) or getattr(a, 'brief', False)
+        if inc_actions:
             from ntqq_action_items import extract_action_items_and_decisions, format_action_items_markdown
             all_target_rows = [r for item in prepared for r in item[4]]
             act_data = extract_action_items_and_decisions(all_target_rows)
             if act_data.get('actions') or act_data.get('decisions'):
                 out.append(format_action_items_markdown(act_data))
 
-        if getattr(a, 'social', False):
+        inc_social = getattr(a, 'social', False) or getattr(a, 'brief', False)
+        if inc_social:
             from ntqq_social import build_social_graph, format_social_graph_markdown
             all_target_rows = [r for item in prepared for r in item[4]]
             soc_graph = build_social_graph(all_target_rows)
@@ -1197,6 +1200,20 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             with open(html_out, 'w', encoding='utf-8') as f:
                 f.write(html_str)
             log('[html] %s (%.1f KB)' % (html_out, len(html_str.encode('utf-8')) / 1024.0))
+
+            # 伴生生成独立全屏 Wrapped 回顾网页
+            if allrows and not getattr(a, 'wrapped', False):
+                try:
+                    from ntqq_wrapped import build_chat_wrapped, render_wrapped_html
+                    wrapped_path = html_out.replace('简报', 'Wrapped') if '简报' in html_out else (os.path.splitext(html_out)[0] + '_wrapped.html')
+                    w_title = meta_info.get('window_str') or '本期简报'
+                    w_data = build_chat_wrapped(allrows, period_name=w_title)
+                    w_html = render_wrapped_html(w_data)
+                    with open(wrapped_path, 'w', encoding='utf-8') as wf:
+                        wf.write(w_html)
+                    log('[wrapped] 伴生全屏回顾报告已生成: %s' % wrapped_path)
+                except Exception as ex:
+                    log_debug('[wrapped] 伴生生成跳过: %s' % ex)
         except Exception as e:
             log_warn('[html] 生成可视化 HTML 简报失败: %r' % e)
 
@@ -1205,7 +1222,7 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             from ntqq_obsidian import export_to_obsidian
             from ntqq_links import extract_links_and_resources
             from ntqq_action_items import extract_action_items_and_decisions
-            vault_dir = a.obsidian_vault or os.path.join(cfg.get('data_root') or '', 'output', 'obsidian')
+            vault_dir = a.obsidian_vault or os.path.join(OUTPUT, 'obsidian')
             for nconv, ntot, code, name, rows, _ in prepared:
                 conv = [r for r in rows if r['kind'] not in SYS_KINDS]
                 ts_list = [r['ts'] for r in rows]
@@ -1216,9 +1233,9 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 links_res = extract_links_and_resources(rows)
                 dialogues = [
                     {
-                        'sender': r.get('sender_name') or '群友',
+                        'sender': (r['sender_name'] if 'sender_name' in r.keys() else '群友') or '群友',
                         'time': fmt(r['ts'], '%H:%M'),
-                        'text': r.get('text') or ''
+                        'text': (r['text'] if 'text' in r.keys() else '') or ''
                     }
                     for r in conv[:30]
                 ]
