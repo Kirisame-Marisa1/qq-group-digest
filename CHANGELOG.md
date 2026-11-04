@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0-beta.1] - 2026-11-04
+
+### Added (Ecosystem Evolution Beta)
+- **🔗 资源与链接归档 (ntqq_links)**: 自动提取群聊内外链、代码库、网盘、多媒体与资讯，剔除追踪参数，并在网页与简报中结构化分类呈现。
+- **📋 待办与决策追踪 (ntqq_action_items)**: 基于动词与 DDL 规则提取群聊待办任务与共识决策，网页端支持即时交互打勾。
+- **🕸️ 社交关系图谱 (ntqq_social)**: 计算群友互动频率与紧密搭档 Top Dyads，纯本地零依赖 SVG 渲染互动拓扑网。
+- **🎁 群聊 Wrapped 回顾 (ntqq_wrapped)**: Spotify 风格年度/周期群聊回顾大屏（话痨之王、夜猫子勋章、高光破纪录日）。
+- **📓 Obsidian 第二大脑导出 (ntqq_obsidian)**: 一键导出兼容 Obsidian 的知识库笔记，支持 YAML frontmatter、Callouts 与双向维基链。
+- **🔍 WinRT 原生 OCR 搜图 (ntqq_ocr)**: Windows 10/11 原生本地 OCR 索引构建，支持图片文字 FTS5 全文搜索。
+- **GUI 生态拓展工具箱**: 桌面客户端集成 Wrapped 回顾、Obsidian 导出、资源待办、OCR 索引快捷入口。
+
+### Fixed
+- 加固 Tencent Files 路径规范化逻辑，修复由于全局 nt_qq 目录导致的父路径误削切。
+- 过滤系统“戳了戳”灰条协议原始 JSON，净化头条重点发言雷达。
+- 修复 sqlite3.Row 属性调用异常与 Obsidian 路径配置回退。
+
 ## [1.6.1] - 2026-11-03
 
 ### Fixed & Optimized
