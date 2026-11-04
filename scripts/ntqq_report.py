@@ -708,6 +708,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
                     help='不在报告里输出「群变更」（新入群/退群/改名）段落')
     ap.add_argument('--links', action='store_true', help='在报告中提取并输出「群内资源与链接合辑」')
     ap.add_argument('--actions', action='store_true', help='在报告中提取并输出「待办事项与决议雷达」')
+    ap.add_argument('--export', choices=['obsidian'], default=None, help='导出格式规范，例如 obsidian')
+    ap.add_argument('--obsidian-vault', default=None, help='指定导出到 Obsidian 库的目录路径')
     ap.add_argument('--structured', action='store_true', default=False,
                     help='采用模块 5 规范：4 大标准化板块（热点/资源/金句/微画像）与 [Ref: #seq] 溯源锚点')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
@@ -1178,6 +1180,48 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             log('[html] %s (%.1f KB)' % (html_out, len(html_str.encode('utf-8')) / 1024.0))
         except Exception as e:
             log_warn('[html] 生成可视化 HTML 简报失败: %r' % e)
+
+    if getattr(a, 'export', None) == 'obsidian' or getattr(a, 'obsidian_vault', None):
+        try:
+            from ntqq_obsidian import export_to_obsidian
+            from ntqq_links import extract_links_and_resources
+            from ntqq_action_items import extract_action_items_and_decisions
+            vault_dir = a.obsidian_vault or os.path.join(cfg.get('data_root') or '', 'output', 'obsidian')
+            for nconv, ntot, code, name, rows, _ in prepared:
+                conv = [r for r in rows if r['kind'] not in SYS_KINDS]
+                ts_list = [r['ts'] for r in rows]
+                first_ts = min(ts_list) if ts_list else 0
+                last_ts = max(ts_list) if ts_list else 0
+                kws = [w for w, _ in keywords([r['text'] for r in conv if r['text']], min_count=2, topk=10)]
+                act_res = extract_action_items_and_decisions(rows)
+                links_res = extract_links_and_resources(rows)
+                dialogues = [
+                    {
+                        'sender': r.get('sender_name') or '群友',
+                        'time': fmt(r['ts'], '%H:%M'),
+                        'text': r.get('text') or ''
+                    }
+                    for r in conv[:30]
+                ]
+                obs_payload = {
+                    'title': f'QQ群聊简报 - {name or code}',
+                    'group_id': str(code),
+                    'group_name': name or str(code),
+                    'date_str': fmt(last_ts, '%Y-%m-%d') if last_ts else '',
+                    'period_str': f"{fmt(first_ts, '%m-%d %H:%M')} ~ {fmt(last_ts, '%m-%d %H:%M')}" if first_ts else '',
+                    'total_messages': len(rows),
+                    'active_members': len(set(r['sender_name'] for r in conv if r['sender_name'])),
+                    'summary': f'统计时段内共收到 {len(rows)} 条消息，产生 {len(conv)} 条有效对话。',
+                    'keywords': kws,
+                    'actions': act_res.get('actions', []),
+                    'decisions': act_res.get('decisions', []),
+                    'dialogues': dialogues,
+                    'links': links_res,
+                }
+                exported_path = export_to_obsidian(obs_payload, vault_dir)
+                log(f'[obsidian] 导出 Obsidian 笔记: {exported_path}')
+        except Exception as e:
+            log_warn(f'[obsidian] 导出异常: {e}')
 
     if a.json:
         result['text'] = text
