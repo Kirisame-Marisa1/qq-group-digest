@@ -165,3 +165,15 @@ def test_build_decoupled_helpers():
             assert is_inc is False
         finally:
             con.close()
+
+def test_normalize_qq_data_dir_handles_tencent_files_and_accounts():
+    from ntqq_core import _normalize_qq_data_dir
+    res = _normalize_qq_data_dir("D:/QQNT/Tencent Files", "2256817393")
+    assert res == "D:/QQNT/Tencent Files"
+    res = _normalize_qq_data_dir("D:/QQNT/Tencent Files/2256817393", "2256817393")
+    assert res == "D:/QQNT/Tencent Files"
+    res = _normalize_qq_data_dir("D:/QQNT/Tencent Files/2256817393/nt_qq/nt_db", "2256817393")
+    assert res == "D:/QQNT/Tencent Files"
+    res = _normalize_qq_data_dir("D:/QQNT/Tencent Files/2256817393/nt_qq/nt_db", "YOUR_QQ")
+    assert res == "D:/QQNT/Tencent Files"
+

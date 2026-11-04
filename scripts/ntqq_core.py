@@ -380,7 +380,9 @@ def _normalize_qq_data_dir(d, acc=''):
     if os.path.basename(d).lower() == 'nt_qq':
         d = os.path.dirname(d)
     base = os.path.basename(d)
-    if (acc and acc != 'YOUR_QQ' and base == acc) or os.path.isdir(os.path.join(d, 'nt_qq')):
+    if base.lower() == 'tencent files':
+        return d
+    if (acc and acc != 'YOUR_QQ' and base == acc) or (base.isdigit() and len(base) >= 5) or os.path.isdir(os.path.join(d, 'nt_qq', 'nt_db')):
         d = os.path.dirname(d)
     return d
 

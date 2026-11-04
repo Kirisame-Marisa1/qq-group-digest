@@ -81,8 +81,11 @@ def assemble():
         if os.path.exists(src_extra):
             shutil.copy2(src_extra, os.path.join(RELEASE_PKG, extra_file))
     
+    cfg_real = os.path.join(BASE_DIR, "config.json")
     cfg_src = os.path.join(BASE_DIR, "config.example.json")
-    if os.path.exists(cfg_src):
+    if os.path.exists(cfg_real):
+        shutil.copy2(cfg_real, os.path.join(RELEASE_PKG, "config.json"))
+    elif os.path.exists(cfg_src):
         shutil.copy2(cfg_src, os.path.join(RELEASE_PKG, "config.json"))
     else:
         sanitized = {

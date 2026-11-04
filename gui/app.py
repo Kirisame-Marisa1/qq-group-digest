@@ -675,6 +675,7 @@ class QQToolGUI(ctk.CTk):
             "class_groups": old.get("class_groups", []),
             "class_group_names": old.get("class_group_names", {}),
             "glossary_autoupdate": old.get("glossary_autoupdate", True),
+            "qq_data_dir": old.get("qq_data_dir", ""),
             "_note": "由GUI自动生成 - 按需解密版",
         }
         try:

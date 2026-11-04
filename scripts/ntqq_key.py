@@ -104,10 +104,12 @@ def db_dir(qq):
     """nt_db 目录。QQ 数据目录装 QQ 时可能被改到别的盘，所以读 config.json 的
     qq_data_dir；配置里的 account 优先，为空时回退命令行的 --qq。"""
     try:
-        qq = str(load_config().get('account') or qq)
+        cfg_acc = str(load_config().get('account') or '').strip()
+        if cfg_acc and cfg_acc != 'YOUR_QQ':
+            qq = cfg_acc
     except Exception:
         pass
-    return qq_path(qq, 'nt_qq', 'nt_db')
+    return qq_path(str(qq), 'nt_qq', 'nt_db')
 
 
 def collect_db_info(d):
