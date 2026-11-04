@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS micro_digests(
   created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_md_group_ts ON micro_digests(group_code, start_ts);
+CREATE TABLE IF NOT EXISTS media_ocr(
+  md5 TEXT PRIMARY KEY,
+  ocr_text TEXT,
+  language TEXT,
+  updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_media_ocr_text ON media_ocr(ocr_text);
 """
 
 

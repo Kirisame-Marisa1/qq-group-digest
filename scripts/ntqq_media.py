@@ -171,6 +171,7 @@ def main():
     ap.add_argument('--prefer-local', action='store_true', default=False,
                     help='先查本机已落盘文件（快，但往往只是缩略图）；默认先走多媒体 CDN 取原图')
     ap.add_argument('--manifest', default=None)
+    ap.add_argument('--ocr', action='store_true', help='下载完成后自动调用 Windows 原生 OCR 识别并建立全文索引')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
     a = ap.parse_args()
     if a.verbose:
@@ -268,6 +269,16 @@ def main():
     log('[media] 完成：成功 %d / %d = %.1f%%  用时 %.1f 分钟' % (ok, len(tasks), 100.0*ok/max(1,len(tasks)), (time.time()-t0)/60))
     log('[media] 明细: %s' % stats)
     log('[media] 清单: %s' % mpath)
+
+    if getattr(a, 'ocr', False):
+        try:
+            from ntqq_ocr import index_media_ocr
+            from ntqq_core import root_dir
+            db_path = os.path.join(root_dir(cfg), 'data', 'index.db')
+            ocr_count = index_media_ocr(db_path, out_root)
+            log('[media] OCR 索引完成：新识别 %d 张图片' % ocr_count)
+        except Exception as e:
+            log_warn('[media] OCR 索引异常: %r' % e)
 
 
 if __name__ == '__main__':

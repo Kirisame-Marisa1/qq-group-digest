@@ -347,6 +347,31 @@ def search_messages(idx, query, t0, t1, msg_table='messages'):
             seen_ids.add(mid)
             out.append(r)
 
+    # 3. 关联检索图片 OCR 识别文本（本地 WinRT 识图）
+    try:
+        from ntqq_ocr import search_ocr_text
+        ocr_hits = search_ocr_text(idx, q)
+        if ocr_hits:
+            hit_md5s = [h["md5"] for h in ocr_hits]
+            placeholders = ",".join("?" for _ in hit_md5s)
+            media_sql = "SELECT msg_id, md5 FROM media WHERE md5 IN (" + placeholders + ")"
+            md5_map = {row["md5"]: row["msg_id"] for row in idx.execute(media_sql, hit_md5s).fetchall()}
+            if md5_map:
+                mids = list(md5_map.values())
+                m_placeholders = ",".join("?" for _ in mids)
+                ocr_msg_sql = "SELECT * FROM " + msg_table + " WHERE msg_id IN (" + m_placeholders + ") AND ts>=? AND ts<=?"
+                for r in idx.execute(ocr_msg_sql, mids + [t0, t1]).fetchall():
+                    mid = r["msg_id"]
+                    if mid not in seen_ids:
+                        seen_ids.add(mid)
+                        ocr_info = next((h for h in ocr_hits if md5_map.get(h["md5"]) == mid), None)
+                        r_dict = dict(r)
+                        snippet = ocr_info["ocr_text"].replace("\n", " ")[:40] if ocr_info else ""
+                        r_dict["text"] = (r_dict.get("text") or "") + ' [📷 识图命中: "%s"]' % snippet
+                        out.append(r_dict)
+    except Exception as e:
+        log_debug("OCR 联动检索跳过: %s" % e)
+
     out.sort(key=lambda r: r['ts'])
     return out
 
