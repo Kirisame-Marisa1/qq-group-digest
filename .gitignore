@@ -19,3 +19,4 @@ smoke_result.txt
 
 *.egg-info/
 .pytest_cache/
+.superpowers/
