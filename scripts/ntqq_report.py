@@ -681,6 +681,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     ap.add_argument('--media-list', default=None, help='把窗口内图片候选写成 TSV')
     ap.add_argument('--no-group-state', action='store_true',
                     help='不在报告里输出「群变更」（新入群/退群/改名）段落')
+    ap.add_argument('--links', action='store_true', help='在报告中提取并输出「群内资源与链接合辑」')
     ap.add_argument('--structured', action='store_true', default=False,
                     help='采用模块 5 规范：4 大标准化板块（热点/资源/金句/微画像）与 [Ref: #seq] 溯源锚点')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志')
@@ -1095,6 +1096,13 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                     build_and_save_micro_digests(idx, extra)
                 except Exception as e:
                     log_debug('保存 micro_digests 异常: %s' % e)
+
+        if getattr(a, 'links', False):
+            from ntqq_links import extract_links_and_resources, format_links_markdown
+            all_target_rows = [r for item in prepared for r in item[4]]
+            links_extracted = extract_links_and_resources(all_target_rows)
+            if links_extracted:
+                out.append(format_links_markdown(links_extracted))
 
     text = '\n'.join(out)
     if a.anonymize:

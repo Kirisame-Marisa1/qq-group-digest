@@ -518,6 +518,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
             'global_keywords': global_kws,
         },
         'focus_items': focus_items,
+        'links': (lambda: (lambda m: m.extract_links_and_resources([r for _, _, _, _, r_list, _ in prepared for r in r_list]))(__import__('ntqq_links')))(),
         'groups': groups_data,
         'markdown': markdown_text,
     }
