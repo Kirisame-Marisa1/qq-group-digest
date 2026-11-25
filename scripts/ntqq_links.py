@@ -3,8 +3,14 @@ ntqq_links.py - 群聊资源与链接归集提取器
 从群消息流中自动提取 URL、清洗追踪参数、自动分类（代码/文章/视频/网盘/文档）并生成结构化合辑。
 """
 
+import os
 import re
+import sys
 import urllib.parse
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
     from ntqq_core import get_row_val as _get_val, safe_local_dt

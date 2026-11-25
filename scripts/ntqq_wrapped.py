@@ -5,7 +5,13 @@ ntqq_wrapped.py - 群聊时光机与年度/阶段总结生成器 (Chat Wrapped)
 """
 
 import html
+import os
+import sys
 from collections import Counter
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
     from ntqq_core import get_row_val as _get_val

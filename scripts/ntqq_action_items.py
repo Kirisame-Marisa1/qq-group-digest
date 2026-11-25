@@ -4,7 +4,13 @@ ntqq_action_items.py - 待办事项与决议雷达提取器
 兼容 dict 与 sqlite3.Row。
 """
 
+import os
 import re
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
     from ntqq_core import AT_MENTION_RE as MENTION_RE, get_row_val as _get_val, safe_local_dt

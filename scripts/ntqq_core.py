@@ -20,6 +20,8 @@ from datetime import datetime, timedelta, timezone
 #     run/        临时文件
 #     logs/
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 APP = os.path.dirname(HERE)                    # .../app
 CONFIG = os.environ.get('NTQQ_CONFIG') or os.path.join(APP, 'config.json')
 SCHEMA_DIR = os.path.join(APP, 'schema')

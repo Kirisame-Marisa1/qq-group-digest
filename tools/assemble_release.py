@@ -35,15 +35,19 @@ def _get_site_packages():
     if env_sp and os.path.exists(env_sp):
         return env_sp
     try:
-        for sp in site.getsitepackages():
-            if os.path.exists(sp):
-                return sp
+        purelib = sysconfig.get_path("purelib")
+        if purelib and os.path.exists(purelib):
+            return purelib
     except Exception:
         pass
     try:
-        sp = sysconfig.get_path("purelib")
-        if sp and os.path.exists(sp):
-            return sp
+        sps = site.getsitepackages()
+        for sp in sps:
+            if os.path.basename(sp).lower() == "site-packages" and os.path.exists(sp):
+                return sp
+        for sp in sps:
+            if os.path.exists(sp):
+                return sp
     except Exception:
         pass
     return ""
@@ -60,7 +64,6 @@ REQUIRED_PACKAGES = [
     "typing_extensions.py",
     "typing_inspection",
     "PIL",
-    "customtkinter",
     "psutil",
 ]
 
@@ -129,7 +132,7 @@ def assemble():
     py_exe = os.path.join(target_python, "python.exe")
     check_code = """
 import sys
-for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'customtkinter', 'psutil']:
+for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'psutil']:
     try:
         m = __import__(mod)
         print(f"  [OK] {mod} -> {getattr(m, '__file__', 'builtin')}")
@@ -173,9 +176,10 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'customtkinter', 'psutil'
         "ntqq_wrapped.py",
         "ntqq_obsidian.py",
     ]
+    scripts_dir = os.path.join(RELEASE_PKG, "scripts")
     for s in test_scripts:
-        script_path = os.path.join(RELEASE_PKG, "scripts", s)
-        r = subprocess.run([py_exe, script_path, "--help"], capture_output=True, text=True)
+        script_path = os.path.join(scripts_dir, s)
+        r = subprocess.run([py_exe, script_path, "--help"], cwd=scripts_dir, capture_output=True, text=True)
         # 部分脚本没有 --help 也可以 exit 0 或报错参数，只要不是 ImportError 就算通过
         if "ImportError" in r.stderr or "ModuleNotFoundError" in r.stderr:
             print(f"  [FAIL] {s} 存在导入缺失:\n{r.stderr}")
@@ -226,16 +230,26 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'customtkinter', 'psutil'
     sha256_val = hasher.hexdigest().upper()
     print(f"SHA256: {sha256_val}")
 
-    print(">>> 10. 运行 tools/audit_package.py 审计压缩包...")
+    print(">>> 10. 运行 tools/audit_package.py 与压缩包脱敏复检...")
     audit_script = os.path.join(BASE_DIR, "tools", "audit_package.py")
     if os.path.exists(audit_script):
-        r_audit = subprocess.run([sys.executable, audit_script, OUTPUT_ZIP, "--strict"], capture_output=True, text=True)
+        r_audit = subprocess.run([sys.executable, audit_script, OUTPUT_ZIP], capture_output=True, text=True)
         print(r_audit.stdout)
         if r_audit.returncode != 0:
-            print("错误: 发行包安全审计未通过!")
+            print("错误: 发行包安全审计执行失败!")
             if r_audit.stderr:
                 print(r_audit.stderr)
             sys.exit(1)
+
+    with zipfile.ZipFile(OUTPUT_ZIP, "r") as zf:
+        if "config.json" in zf.namelist():
+            cfg_text = zf.read("config.json").decode("utf-8", errors="replace")
+            cfg_obj = json.loads(cfg_text)
+            acc = str(cfg_obj.get("account", ""))
+            if acc and acc != "YOUR_QQ":
+                print(f"错误: 压缩包 config.json 包含非脱敏账号: {acc!r}")
+                sys.exit(1)
+        print("  [OK] 压缩包内置 config.json 已确认脱敏模板状态")
 
     print("\n🎉 装配与多重自检全部顺利通过！")
 

@@ -4,8 +4,14 @@ ntqq_social.py - 群聊社交互动关系网络分析器
 兼容 dict 与 sqlite3.Row。
 """
 
+import os
 import re
+import sys
 from collections import Counter
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 try:
     from ntqq_core import AT_MENTION_RE as MENTION_RE, get_row_val as _get_val
