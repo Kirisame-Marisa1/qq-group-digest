@@ -165,6 +165,12 @@ def index_media_ocr(db_path: str, media_dir: str, limit: int = 50) -> int:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     if SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SCRIPT_DIR)
     import ntqq_core

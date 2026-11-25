@@ -199,10 +199,18 @@ def test_media_limit_and_ocr_cli_safety(tmp_path):
     assert hits[0]["md5"] == "ab123456789012345678901234567890"
     con.close()
 
-    # CLI help must work
-    help_res = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "ntqq_ocr.py"), "--help"], capture_output=True, text=True)
+    # CLI help must work regardless of Windows console codepage
+    env_utf8 = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    help_res = subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS_DIR, "ntqq_ocr.py"), "--help"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env_utf8,
+    )
     assert help_res.returncode == 0
-    assert "--batch-size" in help_res.stdout
+    assert "--batch-size" in (help_res.stdout or "")
 
 
 def test_links_actions_social_and_obsidian_hardening(tmp_path):
