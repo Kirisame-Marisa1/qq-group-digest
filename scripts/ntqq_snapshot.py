@@ -8,12 +8,11 @@
 3. 支持上下文管理器协议，解密与查询完毕后自动清理临时副本，保持零残留。
 """
 
-import os
 import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 
 class SafeDBSnapshot:
@@ -22,7 +21,7 @@ class SafeDBSnapshot:
     def __init__(self, src_db_path: str, temp_dir: Optional[str] = None, max_retries: int = 3, retry_delay: float = 0.5):
         self.src_db_path = Path(src_db_path).resolve()
         self.temp_dir = temp_dir
-        self.max_retries = max_retries
+        self.max_retries = max(1, int(max_retries))
         self.retry_delay = retry_delay
         self._temp_dir_obj: Optional[tempfile.TemporaryDirectory] = None
         self.snapshot_db_path: Optional[Path] = None
@@ -36,7 +35,7 @@ class SafeDBSnapshot:
 
     def _copy_with_retry(self, src: Path, dst: Path) -> None:
         """带重试的文件复制，处理 Windows 下短暂的文件共享读锁问题。"""
-        last_err = None
+        last_err: Optional[BaseException] = None
         for attempt in range(self.max_retries):
             try:
                 # 使用二进制分块读取，避免一次性加载大文件到内存，并允许共享读取
@@ -45,7 +44,8 @@ class SafeDBSnapshot:
                 return
             except (OSError, PermissionError) as e:
                 last_err = e
-                time.sleep(self.retry_delay * (attempt + 1))
+                if attempt + 1 < self.max_retries:
+                    time.sleep(self.retry_delay * (attempt + 1))
         raise OSError(f"无法安全拷贝文件 {src} 到 {dst}: {last_err}") from last_err
 
     def create_snapshot(self) -> Path:
@@ -53,25 +53,27 @@ class SafeDBSnapshot:
         if not self.src_db_path.exists():
             raise FileNotFoundError(f"源数据库不存在: {self.src_db_path}")
 
-        # 创建隔离的临时目录
+        # 创建隔离的临时目录（若拷贝途中有失败，立即回收临时目录避免泄漏）
         self._temp_dir_obj = tempfile.TemporaryDirectory(dir=self.temp_dir, prefix="ntqq_snap_")
-        target_dir = Path(self._temp_dir_obj.name)
+        try:
+            target_dir = Path(self._temp_dir_obj.name)
+            db_name = self.src_db_path.name
+            self.snapshot_db_path = target_dir / db_name
 
-        db_name = self.src_db_path.name
-        self.snapshot_db_path = target_dir / db_name
+            src_parent = self.src_db_path.parent
+            suffixes = ["", "-wal", "-shm"]
 
-        # 检查主文件及 wal/shm 伴随文件
-        src_parent = self.src_db_path.parent
-        suffixes = ["", "-wal", "-shm"]
+            for sfx in suffixes:
+                companion_src = src_parent / f"{db_name}{sfx}"
+                if companion_src.exists():
+                    companion_dst = target_dir / f"{db_name}{sfx}"
+                    self._copy_with_retry(companion_src, companion_dst)
+                    self.copied_files.append(companion_dst)
 
-        for sfx in suffixes:
-            companion_src = src_parent / f"{db_name}{sfx}"
-            if companion_src.exists():
-                companion_dst = target_dir / f"{db_name}{sfx}"
-                self._copy_with_retry(companion_src, companion_dst)
-                self.copied_files.append(companion_dst)
-
-        return self.snapshot_db_path
+            return self.snapshot_db_path
+        except BaseException:
+            self.cleanup()
+            raise
 
     def cleanup(self) -> None:
         """清理临时快照目录。"""

@@ -10,10 +10,9 @@
 """
 
 from datetime import datetime, timezone, timedelta
-
+import html
 import json
 import re
-import struct
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +58,8 @@ def _varint(d: bytes, i: int) -> Tuple[int, int]:
     v = 0
     s = 0
     while i < len(d):
+        if s >= 70:
+            raise ValueError("varint too long")
         b = d[i]
         i += 1
         v |= (b & 0x7F) << s
@@ -117,14 +118,15 @@ _s = _decode_str
 # 45002 = 消息段内容类型
 CT_KIND = {
     1: 'text', 2: 'image', 3: 'file', 4: 'audio', 5: 'video',
-    6: 'sticker', 7: 'reply', 8: 'system', 10: 'other', 16: 'forward'
+    6: 'sticker', 7: 'reply', 8: 'system', 10: 'card', 16: 'forward'
 }
 FWD_FIELD = '40900'
 
 
 def classify(ct: Optional[int], f: Dict[int, List[Any]], sc: Optional[dict] = None) -> str:
     """按 45002 判定类型；缺失时用结构字段兜底。"""
-    k = CT_KIND.get(ct or 0)
+    ct_int = ct if isinstance(ct, int) else 0
+    k = CT_KIND.get(ct_int)
     if k == 'file':
         name = (_decode_str(f.get(45402, [b''])[0]) + _decode_str(f.get(45419, [b''])[0])).lower()
         if name.endswith(('.mp4', '.mov', '.mkv', '.avi', '.wmv', '.flv', '.m4v')):
@@ -157,6 +159,7 @@ def forward_text(f: Dict[int, List[Any]], sc: dict) -> Tuple[str, str]:
     B = sc.get('body_40800', {})
     parts: List[str] = []
     kinds: List[str] = []
+    parsed_segs: List[Dict[int, List[Any]]] = []
     for seg in f.get(40800, []):
         try:
             s: Dict[int, List[Any]] = {}
@@ -164,7 +167,9 @@ def forward_text(f: Dict[int, List[Any]], sc: dict) -> Tuple[str, str]:
                 s.setdefault(a, []).append(c)
         except Exception:
             continue
-        ct = s.get(B.get('content_type', 45002), [0])[0]
+        parsed_segs.append(s)
+        ct_raw = s.get(B.get('content_type', 45002), [0])[0]
+        ct = ct_raw if isinstance(ct_raw, int) else 0
         t = _decode_str(s.get(B.get('text', 45101), [b''])[0]).strip()
         if not t:
             for key in ('sys_content', 'reply_summary', 'video_text', 'call_desc', 'filename'):
@@ -180,14 +185,8 @@ def forward_text(f: Dict[int, List[Any]], sc: dict) -> Tuple[str, str]:
         if t:
             parts.append(t)
     if not parts:
-        for seg in f.get(40800, []):
-            try:
-                s_fb: Dict[int, List[Any]] = {}
-                for a, b, c in pb_fields(seg):
-                    s_fb.setdefault(a, []).append(c)
-            except Exception:
-                continue
-            rep_tag = B.get('reply_summary', 47413)
+        rep_tag = B.get('reply_summary', 47413)
+        for s_fb in parsed_segs:
             if rep_tag in s_fb:
                 t = _decode_str(s_fb[rep_tag][0]).strip()
                 if t:
@@ -233,6 +232,7 @@ def decode_forward(blob: Optional[bytes], sc: dict, limit: int = 60) -> List[Dic
 
 
 TZ = timezone(timedelta(hours=8))
+_EPOCH_TZ = datetime(1970, 1, 1, tzinfo=timezone.utc).astimezone(TZ)
 
 
 def format_forward(items: List[Dict[str, Any]], per_line: int = 400) -> str:
@@ -244,17 +244,24 @@ def format_forward(items: List[Dict[str, Any]], per_line: int = 400) -> str:
         t = (m.get('text') or '').replace('\n', ' ')
         if len(t) > per_line:
             t = t[:per_line] + '…'
-        who = m.get('name') or (('QQ%d' % m['qq']) if m.get('qq') else (m.get('uid', '')[:10] or '?'))
-        ts = m.get('ts') or 0
-        when = ('[' + datetime.fromtimestamp(ts, TZ).strftime('%Y-%m-%d %H:%M') + '] ') if ts and ts > 1e9 else ''
+        qq_val = m.get('qq')
+        qq_int = qq_val if isinstance(qq_val, int) else 0
+        who = m.get('name') or (('QQ%d' % qq_int) if qq_int else (str(m.get('uid') or '')[:10] or '?'))
+        ts_raw = m.get('ts') or 0
+        when = ''
+        if isinstance(ts_raw, (int, float)) and ts_raw > 1e9:
+            try:
+                when = '[' + (_EPOCH_TZ + timedelta(seconds=float(ts_raw))).strftime('%Y-%m-%d %H:%M') + '] '
+            except (OverflowError, ValueError):
+                when = ''
         lines.append('  %s%s: %s' % (when, who, t))
     return '\n'.join(lines)
 
 
-# 常见卡片/分享关键词与正则
-_RE_XML_TITLE = re.compile(r'title="([^"]+)"|<title>([^<]+)</title>', re.I)
-_RE_XML_URL = re.compile(r'url="([^"]+)"|<url>([^<]+)</url>|actionData="([^"]+)"', re.I)
-_RE_XML_SUMMARY = re.compile(r'summary="([^"]+)"|<summary>([^<]+)</summary>', re.I)
+# 常见卡片/分享关键词与正则（兼容单引号与双引号）
+_RE_XML_TITLE = re.compile(r'title=(?:"([^"]+)"|\'([^\']+)\')|<title>([^<]+)</title>', re.I)
+_RE_XML_URL = re.compile(r'url=(?:"([^"]+)"|\'([^\']+)\')|<url>([^<]+)</url>|actionData=(?:"([^"]+)"|\'([^\']+)\')', re.I)
+_RE_XML_SUMMARY = re.compile(r'summary=(?:"([^"]+)"|\'([^\']+)\')|<summary>([^<]+)</summary>', re.I)
 
 
 def extract_card_info(raw_text: str) -> Optional[CardInfo]:
@@ -269,21 +276,23 @@ def extract_card_info(raw_text: str) -> Optional[CardInfo]:
             data = json.loads(raw)
             if isinstance(data, dict):
                 # 常见 NTQQ 小程序 / 链接分享卡片结构
-                prompt = data.get("prompt") or ""
-                app = data.get("app") or ""
-                meta = data.get("meta") or {}
+                prompt = str(data.get("prompt") or "")
+                app = str(data.get("app") or "")
+                meta = data.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
                 title = ""
                 desc = ""
                 url = ""
-                source_name = app or ""
+                source_name = app
 
                 # 遍历 meta 内部节点
-                for k, v in meta.items():
+                for _, v in meta.items():
                     if isinstance(v, dict):
-                        title = title or v.get("title") or ""
-                        desc = desc or v.get("desc") or ""
-                        url = url or v.get("jumpUrl") or v.get("url") or v.get("qqdocurl") or ""
-                        source_name = source_name or v.get("source") or v.get("tag") or ""
+                        title = title or str(v.get("title") or "")
+                        desc = desc or str(v.get("desc") or "")
+                        url = url or str(v.get("jumpUrl") or v.get("url") or v.get("qqdocurl") or "")
+                        source_name = source_name or str(v.get("source") or v.get("tag") or "")
 
                 if not title and prompt:
                     title = prompt
@@ -310,11 +319,11 @@ def extract_card_info(raw_text: str) -> Optional[CardInfo]:
     # 2. 尝试 XML 卡片
     if raw.startswith("<?xml") or raw.startswith("<msg "):
         title_m = _RE_XML_TITLE.search(raw)
-        title = (title_m.group(1) or title_m.group(2)) if title_m else ""
+        title = html.unescape(next((g for g in title_m.groups() if g), "")) if title_m else ""
         url_m = _RE_XML_URL.search(raw)
-        url = (url_m.group(1) or url_m.group(2) or url_m.group(3)) if url_m else ""
+        url = html.unescape(next((g for g in url_m.groups() if g), "")) if url_m else ""
         sum_m = _RE_XML_SUMMARY.search(raw)
-        desc = (sum_m.group(1) or sum_m.group(2)) if sum_m else ""
+        desc = html.unescape(next((g for g in sum_m.groups() if g), "")) if sum_m else ""
 
         if title or url:
             return CardInfo(
@@ -347,11 +356,9 @@ class MessageParser:
         n = len(blob)
 
         while i < n:
-            # 找到可能的 UTF-8 序列起始
             j = i
             while j < n:
                 b = blob[j]
-                # 接受可打印 ASCII (0x20..0x7E) 或 UTF-8 多字节序列头 (0xC2..0xF4)
                 if (0x20 <= b <= 0x7E) or (0xC2 <= b <= 0xF4) or (0x80 <= b <= 0xBF):
                     j += 1
                 else:
@@ -359,16 +366,13 @@ class MessageParser:
 
             chunk = blob[i:j]
             if len(chunk) >= min_len:
-                try:
-                    s = chunk.decode("utf-8")
-                    # 过滤纯符号或过多控制字符的碎片
-                    cleaned = re.sub(r'[\x00-\x1f\x7f]', '', s).strip()
-                    has_cjk = any('\u4e00' <= c <= '\u9fff' for c in cleaned)
+                s = chunk.decode("utf-8", errors="replace")
+                for seg in s.split("\ufffd"):
+                    cleaned = re.sub(r'[\x00-\x1f\x7f]', '', seg).strip()
+                    has_cjk = any(('\u4e00' <= c <= '\u9fff') or ('\u3400' <= c <= '\u4dbf') or ('\uf900' <= c <= '\ufaff') for c in cleaned)
                     has_sentence = (' ' in cleaned and len(cleaned) >= 8) or len(cleaned) >= 12
                     if cleaned and (has_cjk or has_sentence):
                         extracted.append(cleaned)
-                except UnicodeDecodeError:
-                    pass
             i = j + 1
 
         return " ".join(extracted).strip()
@@ -419,7 +423,8 @@ class MessageParser:
             for a, b, c in segs:
                 f.setdefault(a, []).append(c)
 
-            ct = f.get(content_type_tag, [0])[0]
+            ct_raw = f.get(content_type_tag, [0])[0]
+            ct = ct_raw if isinstance(ct_raw, int) else 0
             kind = cls.CT_KIND.get(ct, "other")
             if kind == "file":
                 fname = (_decode_str(f.get(45402, [b""])[0]) + _decode_str(f.get(45419, [b""])[0])).lower()
@@ -485,16 +490,30 @@ class MessageParser:
             # 4. 提取图片元数据
             if kind == "image" or 45406 in f or 45802 in f:
                 md5_bytes = f.get(45406, [b""])[0]
-                md5_hex = md5_bytes.hex() if isinstance(md5_bytes, (bytes, bytearray)) and len(md5_bytes) == 16 else ""
-                declared_size = f.get(45405, [0])[0] or 0
+                if isinstance(md5_bytes, (bytes, bytearray)) and len(md5_bytes) == 16:
+                    md5_hex = md5_bytes.hex()
+                elif isinstance(md5_bytes, (bytes, bytearray)) and len(md5_bytes) == 32:
+                    s_md5 = _decode_str(md5_bytes).strip()
+                    md5_hex = s_md5.lower() if re.fullmatch(r'[0-9a-fA-F]{32}', s_md5) else ""
+                else:
+                    md5_hex = ""
+                declared_size_raw = f.get(45405, [0])[0] or 0
+                declared_size = declared_size_raw if isinstance(declared_size_raw, int) else 0
                 host_bytes = f.get(45816, [b""])[0]
                 host = _decode_str(host_bytes)
                 p0 = ""
+                first_path = ""
                 for fno in (45802, 45803, 45804):
                     pv = f.get(fno, [b""])[0]
-                    if isinstance(pv, (bytes, bytearray)) and b"spec=0" in pv:
-                        p0 = _decode_str(pv)
-                        break
+                    if isinstance(pv, (bytes, bytearray)) and pv:
+                        decoded_pv = _decode_str(pv)
+                        if not first_path and decoded_pv.startswith("/"):
+                            first_path = decoded_pv
+                        if b"spec=0" in pv:
+                            p0 = decoded_pv
+                            break
+                if not p0:
+                    p0 = first_path
 
                 if md5_hex:
                     images.append({
@@ -530,8 +549,9 @@ class MessageParser:
 
         final_text = " | ".join(text_parts).strip()
 
-        # 兜底：如果解析结果文本为空但 blob 相当大，尝试 fallback 提取
-        if not final_text and len(blob) > 20:
+        # 兜底：仅当结构未识别（other/empty）且没有任何文本/媒体/引用/卡片时才降级提取文本，避免把图片CDN路径误判为 text
+        if (not final_text and overall_kind in ("other", "empty")
+                and not images and not ats and reply_info is None and card_info is None and len(blob) > 20):
             fb = cls.fallback_extract_strings(blob)
             if fb:
                 final_text = fb

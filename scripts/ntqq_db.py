@@ -13,7 +13,7 @@
 import os
 import sqlite3
 import sys
-import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 
@@ -103,32 +103,52 @@ def _mig_1_media_host_path(con: sqlite3.Connection) -> None:
 
 def _mig_2_c2c_tables(con: sqlite3.Connection) -> None:
     """v2: 确保私聊独立索引表 c2c_messages / c2c_groups 存在。"""
-    con.executescript("""
-    CREATE TABLE IF NOT EXISTS c2c_messages(
-      msg_id INTEGER PRIMARY KEY,
-      ts INTEGER, day TEXT, hour INTEGER,
-      group_code INTEGER, group_name TEXT,
-      sender_uid TEXT, sender_qq INTEGER, sender_name TEXT,
-      direction INTEGER, msg_type INTEGER, subtype INTEGER,
-      kind TEXT, text TEXT, reply_seq INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_c2c_ts ON c2c_messages(ts);
-    CREATE INDEX IF NOT EXISTS idx_c2c_group_ts ON c2c_messages(group_code, ts);
-    CREATE TABLE IF NOT EXISTS c2c_groups(
-      group_code INTEGER PRIMARY KEY, group_name TEXT,
-      first_ts INTEGER, last_ts INTEGER, n INTEGER
-    );
-    """)
+    stmts = (
+        """CREATE TABLE IF NOT EXISTS c2c_messages(
+          msg_id INTEGER PRIMARY KEY,
+          ts INTEGER, day TEXT, hour INTEGER,
+          group_code INTEGER, group_name TEXT,
+          sender_uid TEXT, sender_qq INTEGER, sender_name TEXT,
+          direction INTEGER, msg_type INTEGER, subtype INTEGER,
+          kind TEXT, text TEXT, reply_seq INTEGER
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_c2c_ts ON c2c_messages(ts)",
+        "CREATE INDEX IF NOT EXISTS idx_c2c_group_ts ON c2c_messages(group_code, ts)",
+        """CREATE TABLE IF NOT EXISTS c2c_groups(
+          group_code INTEGER PRIMARY KEY, group_name TEXT,
+          first_ts INTEGER, last_ts INTEGER, n INTEGER
+        )""",
+    )
+    for stmt in stmts:
+        con.execute(stmt)
 
 
 def _mig_3_fts5(con: sqlite3.Connection) -> None:
-    """v3: 建立基于 messages 外部内容的 FTS5 全文检索虚拟表。"""
+    """v3: 建立基于 messages 外部内容的 FTS5 全文检索虚拟表及同步触发器。"""
     core = _get_core()
     try:
         con.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
           text, content='messages', content_rowid='msg_id', tokenize='unicode61'
         )
+        """)
+        con.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages WHEN new.text IS NOT NULL AND new.text != '' BEGIN
+          INSERT INTO messages_fts(rowid, text) VALUES (new.msg_id, new.text);
+        END
+        """)
+        con.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages WHEN old.text IS NOT NULL AND old.text != '' BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, text) VALUES('delete', old.msg_id, old.text);
+        END
+        """)
+        con.execute("""
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, text)
+            SELECT 'delete', old.msg_id, old.text WHERE old.text IS NOT NULL AND old.text != '';
+          INSERT INTO messages_fts(rowid, text)
+            SELECT new.msg_id, new.text WHERE new.text IS NOT NULL AND new.text != '';
+        END
         """)
     except sqlite3.OperationalError as e:
         core.log_debug('SQLite 环境不支持 FTS5，跳过全文索引创建: %s' % e)
@@ -143,29 +163,47 @@ def _mig_4_messages_seq(con: sqlite3.Connection) -> None:
 
 def _mig_5_hierarchical_index(con: sqlite3.Connection) -> None:
     """v5: 建立群级别增量游标 group_cursors 与分层微摘要表 micro_digests。"""
-    con.executescript("""
-    CREATE TABLE IF NOT EXISTS group_cursors (
-      group_code INTEGER PRIMARY KEY,
-      last_processed_msg_seq INTEGER DEFAULT 0,
-      last_msg_time INTEGER DEFAULT 0,
-      updated_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS micro_digests (
-      cluster_id TEXT PRIMARY KEY,
-      group_code INTEGER,
-      start_seq INTEGER,
-      end_seq INTEGER,
-      start_ts INTEGER,
-      end_ts INTEGER,
-      title TEXT,
-      summary TEXT,
-      entities TEXT,
-      participants TEXT,
-      msg_count INTEGER,
-      created_at INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_md_group_ts ON micro_digests(group_code, start_ts);
-    """)
+    stmts = (
+        """CREATE TABLE IF NOT EXISTS group_cursors (
+          group_code INTEGER PRIMARY KEY,
+          last_processed_msg_seq INTEGER DEFAULT 0,
+          last_msg_time INTEGER DEFAULT 0,
+          updated_at INTEGER
+        )""",
+        """CREATE TABLE IF NOT EXISTS micro_digests (
+          cluster_id TEXT PRIMARY KEY,
+          group_code INTEGER,
+          start_seq INTEGER,
+          end_seq INTEGER,
+          start_ts INTEGER,
+          end_ts INTEGER,
+          title TEXT,
+          summary TEXT,
+          entities TEXT,
+          participants TEXT,
+          msg_count INTEGER,
+          created_at INTEGER
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_md_group_ts ON micro_digests(group_code, start_ts)",
+    )
+    for stmt in stmts:
+        con.execute(stmt)
+
+
+def _mig_6_fts5_triggers(con: sqlite3.Connection) -> None:
+    """v6: 为历史 v3~v5 建库的 messages_fts 补齐自动同步触发器并校准索引。"""
+    core = _get_core()
+    try:
+        has_fts = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
+        if not has_fts:
+            _mig_3_fts5(con)
+            return
+        has_trig = con.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='messages_ai'").fetchone()
+        if not has_trig:
+            _mig_3_fts5(con)
+            con.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+    except sqlite3.OperationalError as e:
+        core.log_debug('FTS5 v6 触发器迁移跳过: %s' % e)
 
 
 INDEX_MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
@@ -174,6 +212,7 @@ INDEX_MIGRATIONS: List[Tuple[int, str, Callable[[sqlite3.Connection], None]]] = 
     (3, 'messages_fts5', _mig_3_fts5),
     (4, 'messages_seq_col', _mig_4_messages_seq),
     (5, 'hierarchical_index', _mig_5_hierarchical_index),
+    (6, 'fts5_triggers', _mig_6_fts5_triggers),
 ]
 
 
@@ -181,17 +220,20 @@ def run_index_migrations(con: sqlite3.Connection) -> None:
     """按版本号顺序执行 index.db 结构迁移。"""
     core = _get_core()
     r = con.execute("SELECT value FROM meta WHERE key='db_schema_version'").fetchone()
-    cur_ver = int(r[0]) if (r and str(r[0]).isdigit()) else 0
-    # 即使版本号已最新，也做一次幂等列检查以兼容未写入 db_schema_version 的旧库
-    _mig_1_media_host_path(con)
-    _mig_4_messages_seq(con)
-    for ver, name, fn in INDEX_MIGRATIONS:
-        if cur_ver < ver:
+    raw_ver = str(r[0]) if r and r[0] is not None else ''
+    cur_ver = int(raw_ver) if raw_ver.isdigit() else 0
+    if cur_ver == 0:
+        # 兼容未写入 db_schema_version 的历史库
+        _mig_1_media_host_path(con)
+        _mig_4_messages_seq(con)
+    pending = [(ver, name, fn) for ver, name, fn in INDEX_MIGRATIONS if cur_ver < ver]
+    if not pending:
+        return
+    with con:
+        for ver, name, fn in pending:
             core.log_debug('[db-migrate] 执行索引迁移 v%d (%s)' % (ver, name))
             fn(con)
             con.execute("INSERT OR REPLACE INTO meta VALUES ('db_schema_version', ?)", (str(ver),))
-            cur_ver = ver
-    con.commit()
 
 
 def rebuild_fts(con: sqlite3.Connection) -> None:
@@ -205,8 +247,13 @@ def rebuild_fts(con: sqlite3.Connection) -> None:
 
 
 def sync_fts_incremental(con: sqlite3.Connection, rows: List[Any]) -> None:
-    """增量同步 FTS5 虚拟表，避免全表盲目全量重建。"""
+    """增量同步 FTS5 虚拟表；若已启用触发器则自动完成无需重复写入。"""
     core = _get_core()
+    try:
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='messages_ai'").fetchone():
+            return
+    except sqlite3.DatabaseError:
+        pass
     fts_data = [(r[0], r[13]) for r in rows if len(r) > 13 and r[13]]
     if fts_data:
         try:
@@ -217,8 +264,8 @@ def sync_fts_incremental(con: sqlite3.Connection, rows: List[Any]) -> None:
 
 def open_ro(path: str) -> sqlite3.Connection:
     """以只读 URI 模式打开 SQLite 数据库，避免占用或写入，并启用 mmap 与页缓存加速扫描。"""
-    ap = os.path.abspath(path).replace('\\', '/')
-    con = sqlite3.connect('file:%s?mode=ro' % ap, uri=True)
+    uri = Path(path).resolve().as_uri() + '?mode=ro'
+    con = sqlite3.connect(uri, uri=True)
     try:
         con.execute("PRAGMA mmap_size = 268435456;")
         con.execute("PRAGMA cache_size = -32000;")
@@ -240,6 +287,7 @@ def open_index(index_path: Optional[str] = None) -> sqlite3.Connection:
     try:
         con.execute("PRAGMA journal_mode = WAL;")
         con.execute("PRAGMA synchronous = NORMAL;")
+        con.execute("PRAGMA recursive_triggers = ON;")
         con.execute("PRAGMA cache_size = -64000;")     # 64MB 内存页缓存
         con.execute("PRAGMA temp_store = MEMORY;")     # 临时表与排序走内存
         con.execute("PRAGMA mmap_size = 268435456;")   # 256MB 内存映射 I/O
@@ -251,35 +299,62 @@ def open_index(index_path: Optional[str] = None) -> sqlite3.Connection:
 
 
 def iter_rows_desc(path: str, select_cols: List[str], table: str, where: str = '', params: Tuple[Any, ...] = (), batch: int = 2000,
-                   max_rows: int = 0) -> Generator[List[Any], None, None]:
-    """倒序游标流式读 SQLite 表。即使页面有轻微损坏，跳过错误行继续读。"""
+                   max_rows: int = 0) -> Generator[Tuple[Any, ...], None, None]:
+    """倒序游标流式读 SQLite 表。即使页面有轻微损坏，按 rowid keyset 跳过损坏页/行继续读。"""
     core = _get_core()
+    safe_table = core.validate_sql_ident(table)
+    safe_cols = ','.join('"%s"' % core.validate_sql_ident(c) for c in select_cols)
     con = open_ro(path)
     cur = con.cursor()
-    sql = 'SELECT %s FROM %s' % (','.join(select_cols), table)
-    if where:
-        sql += ' WHERE ' + where
-    sql += ' ORDER BY rowid DESC'
-    cur.execute(sql, params)
     read_n = 0
     errors = 0
-    while True:
-        try:
-            rows = cur.fetchmany(batch)
-        except sqlite3.DatabaseError as e:
-            errors += 1
-            if errors > 100:
-                core.log_warn('  [warn] 遇到过多损坏页，提前停止读取 %s' % table)
+    last_rowid: Optional[int] = None
+    cur_batch = max(1, int(batch))
+    try:
+        base_sql = 'SELECT rowid, %s FROM "%s"' % (safe_cols, safe_table)
+        while True:
+            clauses = []
+            q_params: List[Any] = []
+            if where:
+                clauses.append('(' + where + ')')
+                q_params.extend(params)
+            if last_rowid is not None:
+                clauses.append('rowid < ?')
+                q_params.append(last_rowid)
+            sql = base_sql + (' WHERE ' + ' AND '.join(clauses) if clauses else '') + ' ORDER BY rowid DESC LIMIT ?'
+            q_params.append(cur_batch)
+            try:
+                rows = cur.execute(sql, tuple(q_params)).fetchall()
+            except sqlite3.DatabaseError:
+                errors += 1
+                if errors > 100:
+                    core.log_warn('  [warn] 遇到过多损坏页，提前停止读取 %s' % safe_table)
+                    break
+                if cur_batch > 1:
+                    cur_batch = max(1, cur_batch // 2)
+                elif last_rowid is not None:
+                    last_rowid -= 1
+                else:
+                    break
+                continue
+            if not rows:
                 break
-            continue
-        if not rows:
-            break
-        for r in rows:
-            yield r
-            read_n += 1
-            if max_rows and read_n >= max_rows:
-                con.close()
-                return
-    con.close()
+            for r in rows:
+                last_rowid = r[0]
+                yield r[1:]
+                read_n += 1
+                if max_rows and read_n >= max_rows:
+                    return
+            if cur_batch < batch:
+                cur_batch = min(batch, cur_batch * 2)
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            con.close()
+        except Exception:
+            pass
     if errors:
         core.log_warn('  [warn] 跳过 %d 次损坏读取' % errors)

@@ -7,19 +7,29 @@
 重要：nt_msg.db 里 rowid(40001) 与时间不是严格同序（实测同一时刻的消息 rowid 可相差上千万亿），
       所以不能靠 rowid 倒序扫描，必须用 group_msg_table_idx40027_40058 索引按「群 + 日期」取。
 """
-import argparse, json, os, sqlite3, sys, time
+import argparse, contextlib, hashlib, json, os, sqlite3, sys, time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import (sync_fts_incremental, load_config, validate_config, load_schema, find_schema, ensure_dirs,
-                       ensure_keymap, ensure_plain, cleanup_plain, unwrap_key_hex, open_ro,
-                       build_names, open_index, decode_body, decode_forward, format_forward,
-                       pb_fields, rebuild_fts, src_db, now_ts, local, fmt,
+from ntqq_core import (atomic_write_json, atomic_write_text, sync_fts_incremental, load_config, validate_config,
+                       load_schema, find_schema, ensure_dirs, ensure_keymap, ensure_plain, cleanup_plain,
+                       unwrap_key_hex, open_ro, build_names, open_index, MessageParser, decode_forward,
+                       format_forward, rebuild_fts, src_db, now_ts, local, fmt, validate_sql_ident,
                        TZ, RUN, PLAIN, CACHE, log, log_debug, log_warn, log_error, set_log_level)
-try:
-    from ntqq_normalizer import NoiseNormalizer
-except ImportError:
-    NoiseNormalizer = None
+
+_UPSERT_MSG_SQL = (
+    'INSERT INTO messages(msg_id, ts, day, hour, group_code, group_name, '
+    'sender_uid, sender_qq, sender_name, direction, msg_type, subtype, '
+    'kind, text, reply_seq, seq) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+    'ON CONFLICT(msg_id) DO UPDATE SET '
+    'ts=excluded.ts, day=excluded.day, hour=excluded.hour, '
+    'group_code=excluded.group_code, group_name=excluded.group_name, '
+    'sender_uid=excluded.sender_uid, sender_qq=excluded.sender_qq, '
+    'sender_name=excluded.sender_name, direction=excluded.direction, '
+    'msg_type=excluded.msg_type, subtype=excluded.subtype, '
+    'kind=excluded.kind, text=excluded.text, '
+    'reply_seq=excluded.reply_seq, seq=excluded.seq'
+)
 
 
 def flush_media(idx, mbuf):
@@ -29,24 +39,30 @@ def flush_media(idx, mbuf):
 
 
 def flush_buf(idx, buf, normalizer=None):
+    """批量写入原始消息到 messages（保留原始条数与上下文完整性）。"""
     if not buf:
         return
-    rows = buf
-    if normalizer is not None:
-        try:
-            norm = normalizer.normalize_batch(buf)
-            rows = [
-                (m.msg_id, m.ts, m.day, m.hour, m.group_code, m.group_name,
-                 m.sender_uid, m.sender_qq, m.sender_name, m.direction,
-                 m.msg_type, m.subtype, m.kind, m.text, m.reply_seq, m.seq)
-                for m in norm
-            ]
-        except Exception as e:
-            log_debug('复读折叠异常: %s' % e)
-            rows = buf
-    idx.executemany('INSERT OR REPLACE INTO messages VALUES (%s)' % ','.join('?' * 16), rows)
-    sync_fts_incremental(idx, rows)
+    idx.executemany(_UPSERT_MSG_SQL, buf)
+    sync_fts_incremental(idx, buf)
     buf.clear()
+
+
+def _deterministic_peer_qq(peer_uid: str) -> int:
+    digest = hashlib.blake2b(peer_uid.encode('utf-8'), digest_size=8).digest()
+    return int.from_bytes(digest, 'big') % 10000000000
+
+
+def should_early_stop_stream(msg_day: int, scan_day0: int, consecutive_old: int, kept: int,
+                             stop_threshold: int = 500) -> Tuple[bool, int, bool]:
+    """判定倒序流式扫描是否命中早退条件。返回 (should_break, new_consecutive_old, skip_row)。"""
+    if scan_day0 > 0 and msg_day > 0 and msg_day < scan_day0:
+        new_old = consecutive_old + 1
+        if kept > 0 and new_old >= stop_threshold:
+            return True, new_old, True
+        return False, new_old, True
+    if msg_day > 0:
+        return False, 0, False
+    return False, consecutive_old, False
 
 KEYS = ['seq', 'direction', 'sender_uid', 'group_code_str', 'group_key',
         'sender_qq', 'time', 'card', 'nick', 'msg_type', 'subtype', 'body', 'reply_seq', 'forward']
@@ -81,25 +97,30 @@ def group_codes(sc):
     codes = set()
     gi = os.path.join(PLAIN, 'group_info.db')
     if os.path.exists(gi):
-        con = open_ro(gi)
-        for t in ('group_list', 'group_detail_info_ver1'):
-            try:
-                for (c,) in con.execute('SELECT "60001" FROM "%s"' % t):
-                    if c:
-                        codes.add(int(c))
-            except sqlite3.DatabaseError as e:
-                log_debug('读 %s 群号异常: %s' % (t, e))
-        con.close()
+        with contextlib.closing(open_ro(gi)) as con:
+            for t in ('group_list', 'group_detail_info_ver1'):
+                try:
+                    t_safe = validate_sql_ident(t)
+                    for (c,) in con.execute('SELECT "60001" FROM "%s"' % t_safe):
+                        if c:
+                            try:
+                                codes.add(int(c))
+                            except (ValueError, TypeError):
+                                pass
+                except (sqlite3.DatabaseError, ValueError) as e:
+                    log_debug('读 %s 群号异常: %s' % (t, e))
     nm = os.path.join(PLAIN, 'nt_msg.db')
     if os.path.exists(nm):
-        con = open_ro(nm)
-        try:
-            for (c,) in con.execute('SELECT DISTINCT "40027" FROM recent_contact_v3_table'):
-                if c:
-                    codes.add(int(c))
-        except sqlite3.DatabaseError as e:
-            log_debug('读 recent_contact_v3_table 群号异常: %s' % e)
-        con.close()
+        with contextlib.closing(open_ro(nm)) as con:
+            try:
+                for (c,) in con.execute('SELECT DISTINCT "40027" FROM recent_contact_v3_table'):
+                    if c:
+                        try:
+                            codes.add(int(c))
+                        except (ValueError, TypeError):
+                            pass
+            except sqlite3.DatabaseError as e:
+                log_debug('读 recent_contact_v3_table 群号异常: %s' % e)
     return sorted(codes)
 
 
@@ -122,8 +143,7 @@ def schema_gate(con, sc, schema_path):
     recorded = sc.get('structure')
     if not recorded:
         sc['structure'] = live
-        with open(schema_path, 'w', encoding='utf-8') as f:
-            json.dump(sc, f, indent=2, ensure_ascii=False)
+        atomic_write_json(schema_path, sc, indent=2)
         log('[schema] 首次记录库结构（%d 张表）' % len(live))
         return True, []
     opt_tables = set(sc.get('added_tables_9936') or ())
@@ -144,11 +164,13 @@ def schema_gate(con, sc, schema_path):
     if not problems:
         return True, []
     rep = os.path.join(RUN, 'schema_report.md')
-    with open(rep, 'w', encoding='utf-8') as f:
-        f.write('# Schema 漂移报告\n\n基线版本: %s\n检测时间: %s\n\n'
-                % (sc.get('qq_version'), time.strftime('%Y-%m-%d %H:%M:%S')))
-        for p in problems:
-            f.write('- %s\n' % p)
+    lines = [
+        '# Schema 漂移报告\n\n基线版本: %s\n检测时间: %s\n\n'
+        % (sc.get('qq_version'), time.strftime('%Y-%m-%d %H:%M:%S'))
+    ]
+    for p in problems:
+        lines.append('- %s\n' % p)
+    atomic_write_text(rep, ''.join(lines))
     if _core_cols_ok(live, sc):
         log_warn('[schema] 检测到非核心表/列差异 %d 项（核心消息列完整，继续构建；详见 run/schema_report.md）' % len(problems))
         return True, []
@@ -269,6 +291,11 @@ def build_once(a):
 
     # QQ 是活跃写入的库，解密快照可能正好落在一次 checkpoint 中间，读 sqlite_master 会报 malformed。
     # 这种情况重新解密一次即可，最多重试 3 轮。
+    ssrc = None
+    sdb = None
+    SL = None
+    sroot = None
+    SCOLS = []
     if stream:
         try:
             import ntqq_slice as SL
@@ -308,6 +335,12 @@ def build_once(a):
             sroot, ssql = sdb.tables['group_msg_table']
             SCOLS = SL.cols_of(ssql)
         except Exception as e:
+            if ssrc is not None:
+                try:
+                    ssrc.close()
+                except Exception:
+                    pass
+                ssrc = sdb = None
             log('warn: 倒序流式解析初始化异常 (%s)，平滑回退至经典全盘解密模式...' % e)
             stream = False
             _prepare_decrypted_sources(cfg, km, a, stream=False, snap=snap)
@@ -342,6 +375,11 @@ def build_once(a):
                 con.close()
             except Exception:
                 pass
+        if ssrc is not None:
+            try:
+                ssrc.close()
+            except Exception:
+                pass
         sys.exit(3)
 
     log('[names] 读取群名/昵称 ...')
@@ -353,7 +391,7 @@ def build_once(a):
 
     codes = group_codes(sc)
     if a.only_groups:
-        want = set(int(x) for x in a.only_groups.split(','))
+        want = {int(x.strip()) for x in a.only_groups.split(',') if x.strip().isdigit()}
         codes = [c for c in codes if c in want]
     total_g = len(codes)
     processed = set()
@@ -366,7 +404,15 @@ def build_once(a):
         processed.add(g_code)
         report_progress()
 
-    idx = open_index()
+    with contextlib.closing(open_index()) as idx:
+        _run_index_pipeline(a, cfg, sc, G, days, cut, day0, wlabel, src_mode, km, stream, snap,
+                            ssrc, sdb, SL, sroot, SCOLS, group_names, member_names, global_names,
+                            codes, total_g, processed, report_progress, done_g, idx, t0)
+
+
+def _run_index_pipeline(a, cfg, sc, G, days, cut, day0, wlabel, src_mode, km, stream, snap,
+                        ssrc, sdb, SL, sroot, SCOLS, group_names, member_names, global_names,
+                        codes, total_g, processed, report_progress, done_g, idx, t0):
     include_c2c = bool(getattr(a, 'include_c2c', False) or cfg.get('include_c2c', False))
     if a.rebuild:
         idx.execute('DELETE FROM messages'); idx.execute('DELETE FROM groups')
@@ -384,15 +430,14 @@ def build_once(a):
     I = {k: i + 1 for i, k in enumerate(KEYS)}
     G = dict(G)
     G['forward'] = '40900'          # 40900 不在 schema 的 group_msg_table 映射里，单独补
-    cols = ','.join('"%s"' % G[k] for k in KEYS)
+    cols = ','.join('"%s"' % validate_sql_ident(G[k]) for k in KEYS)
     PATHS = os.path.join(PLAIN, 'nt_msg.db')
     sql = ('SELECT rowid,%s FROM group_msg_table WHERE "%s"=? AND "%s">=? ORDER BY "%s"'
-           % (cols, G['group_key'], G['day'], G['day']))
+           % (cols, validate_sql_ident(G['group_key']), validate_sql_ident(G['day']), validate_sql_ident(G['day'])))
     sql_day = ('SELECT rowid,%s FROM group_msg_table WHERE "%s"=? AND "%s">=? AND "%s"<? ORDER BY "%s"'
-               % (cols, G['group_key'], G['day'], G['day'], G['day']))
+               % (cols, validate_sql_ident(G['group_key']), validate_sql_ident(G['day']), validate_sql_ident(G['day']), validate_sql_ident(G['day'])))
 
     con = None if stream else open_ro(PATHS)
-    normalizer = None if getattr(a, 'no_fold_repeats', False) or (NoiseNormalizer is None) else NoiseNormalizer()
     buf = []
     mbuf = []
     n = 0
@@ -432,7 +477,6 @@ def build_once(a):
         if ts < cut:
             n += 1
             return
-        # d 必须在图片登记之前算出来：登记分支（下面 mbuf.append）会用到它。
         d = local(ts) if ts else None
         max_ts = max(max_ts, ts)
         uid = r[I['sender_uid']] or ''
@@ -443,42 +487,20 @@ def build_once(a):
         if not name:
             name = '系统'
         try:
-            kind, text = decode_body(r[I['body']], sc)
+            parsed = MessageParser.parse_body(r[I['body']], sc)
+            kind, text = parsed.raw_kind, parsed.normalized_text
+            for img in parsed.raw_images:
+                decl_sz = img.get('size') or 0
+                if not getattr(a, 'no_filter_images', False) and 0 < decl_sz < 15360:
+                    continue
+                md5_hex = img.get('md5') or ''
+                if md5_hex:
+                    mbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '',
+                                 g, group_names.get(g, ''), name, md5_hex,
+                                 decl_sz, img.get('host') or '', img.get('path') or ''))
         except Exception as e:
-            log_debug('decode_body 异常 msg_id=%s: %r' % (r[0], e))
+            log_debug('parse_body 异常 msg_id=%s: %r' % (r[0], e))
             kind, text = 'error', ''
-        # 图片消息：登记 md5，供「不点开也能下原图」使用
-        if r[I['body']]:
-            try:
-                for a_f, b_f, c_f in pb_fields(r[I['body']]):
-                    if a_f != 40800 or b_f != 2:
-                        continue
-                    sf = {}
-                    for x, y, z in pb_fields(c_f):
-                        sf.setdefault(x, []).append(z)
-                    if sf.get(45002, [0])[0] == 2:
-                        decl_sz = sf.get(45405, [0])[0] or 0
-                        # L1 过滤：跳过 < 15KB 的微小贴纸/表情（可通过 --no-filter-images 关闭）
-                        if not getattr(a, 'no_filter_images', False) and 0 < decl_sz < 15360:
-                            continue
-                        mm = sf.get(45406, [b''])[0]
-                        if isinstance(mm, (bytes, bytearray)) and len(mm) == 16:
-                            # 顺带记下多媒体 CDN 的 host 与 spec=0（原图）路径，
-                            # 供 ntqq_media.py 配合内存里的 rkey 取原图。
-                            hv = sf.get(45816, [b''])[0]
-                            host = hv.decode('utf8', 'replace') if isinstance(hv, (bytes, bytearray)) else ''
-                            p0 = ''
-                            for fno in (45802, 45803, 45804):
-                                pv = sf.get(fno, [b''])[0]
-                                if isinstance(pv, (bytes, bytearray)) and b'spec=0' in pv:
-                                    p0 = pv.decode('utf8', 'replace')
-                                    break
-                            mbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '',
-                                         g, group_names.get(g, ''), name, mm.hex(),
-                                         decl_sz, host, p0))
-            except Exception as e:
-                log_warn('[warn] 图片登记异常（msg_id=%s）: %s' % (r[0], str(e)[:120]))
-        # 转发：把 40900 里的原始消息展开，正文接在后面
         try:
             fwd = decode_forward(r[I['forward']], sc)
             if fwd:
@@ -492,199 +514,227 @@ def build_once(a):
                     r[I['direction']] or 0, r[I['msg_type']] or 0, r[I['subtype']] or 0,
                     kind, text, r[I['reply_seq']] or 0, r[I['seq']] or 0))
         while len(buf) >= 4000:
-            flush_buf(idx, buf, normalizer)
+            flush_buf(idx, buf)
             idx.commit()
         if len(mbuf) >= 4000:
             flush_media(idx, mbuf)
             idx.commit()
         n += 1
 
-    # 分轮读取：整段失败就先「重新解密一份新快照」再重试。
-    # 原因：QQ 是活跃写入的库，某次解密快照可能正好落在一次 checkpoint 中间，
-    # 损坏页落在哪个群上每次都不一样，换个快照通常就好了。
-    if stream:
-        # ── 单遍扫描加密库：边解边丢，不产生 4GB 明文副本 ──
-        pos_of = {c: i for i, c in enumerate(SCOLS)}
-        need = {}
-        for i, k in enumerate(KEYS):
-            need[pos_of[G[k]]] = i + 1
-        SLOT_DAY = len(KEYS) + 1
-        SLOT_GK = len(KEYS) + 2
-        need[pos_of[G['day']]] = SLOT_DAY
-        need[pos_of[G['group_key']]] = SLOT_GK
-        want_groups = set(codes)
-        # 先只解「群 + 日」两个整数列做过滤（跳过 3GB blob 不解码），命中才解全部列
-        GATE = {pos_of[G['group_key']]: 0, pos_of[G['day']]: 1}
-        scanned = 0
-        kept = 0
-        seen = set()
-        t_scan = time.time()
-        consecutive_old = 0
-        STOP_THRESHOLD = 200  # 连续 200 条消息早于窗口阈值且已有命中时判定窗口已扫完，提前终止
-        for rowid, pl in sdb.rows_desc(sroot):
-            scanned += 1
-            try:
-                g = SL.decode_some(pl, GATE)
-            except Exception:
-                ssrc.bad_rows += 1
-                continue
-            msg_day = g[1] or 0
-            if scan_day0 > 0 and msg_day < scan_day0:
-                consecutive_old += 1
-                if consecutive_old >= STOP_THRESHOLD:
+    try:
+        if stream:
+            pos_of = {c: i for i, c in enumerate(SCOLS)}
+            need = {}
+            for i, k in enumerate(KEYS):
+                need[pos_of[G[k]]] = i + 1
+            SLOT_DAY = len(KEYS) + 1
+            SLOT_GK = len(KEYS) + 2
+            need[pos_of[G['day']]] = SLOT_DAY
+            need[pos_of[G['group_key']]] = SLOT_GK
+            want_groups = set(codes)
+            GATE = {pos_of[G['group_key']]: 0, pos_of[G['day']]: 1}
+            scanned = 0
+            kept = 0
+            seen = set()
+            t_scan = time.time()
+            consecutive_old = 0
+            STOP_THRESHOLD = 500
+            for rowid, pl in sdb.rows_desc(sroot):
+                scanned += 1
+                try:
+                    g = SL.decode_some(pl, GATE)
+                except Exception:
+                    ssrc.bad_rows += 1
+                    continue
+                msg_day = g[1] or 0
+                do_break, consecutive_old, skip_row = should_early_stop_stream(
+                    msg_day, scan_day0, consecutive_old, kept, STOP_THRESHOLD
+                )
+                if do_break:
                     log('[source] 倒序流式扫描触发提前终止（连续 %d 条早于窗口 %s），已完成窗口提取'
-                        % (consecutive_old, datetime.fromtimestamp(scan_day0, TZ).strftime('%Y-%m-%d')))
+                        % (consecutive_old, fmt(scan_day0, '%Y-%m-%d')))
                     break
-                continue
-            else:
-                consecutive_old = 0
+                if skip_row:
+                    continue
 
-            gk = g[0]
-            if gk not in want_groups:
-                continue
+                gk = g[0]
+                if gk not in want_groups:
+                    continue
+                try:
+                    vals = SL.decode_some(pl, need)
+                except Exception:
+                    ssrc.bad_rows += 1
+                    continue
+                vals[0] = rowid
+                if gk not in seen:
+                    seen.add(gk)
+                    done_g(gk)
+                kept += 1
+                take_row(gk, tuple(vals[:len(KEYS) + 1]))
+                if scanned % 100000 == 0:
+                    log('  [scan] 已倒序扫描 %d 行 / 命中 %d 条 / %.1fs' % (scanned, kept, time.time() - t_scan))
+            n = scanned
+            ngroup = len(seen)
+            log('[source] 倒序流式提取完成：扫描 %d 行，命中 %d 群 / %d 条，坏行 %d，耗时 %.1fs'
+                % (scanned, ngroup, kept, ssrc.bad_rows, time.time() - t_scan))
+
+        pending = [] if stream else list(codes)
+        for round_no in range(3):
+            if not pending:
+                break
+            failed = []
+            for g in pending:
+                rows = run(sql, (g, scan_day0))
+                if rows is None:
+                    failed.append(g)
+                else:
+                    take(g, rows)
+                    done_g(g)
+            if not failed:
+                break
+            log_warn('[warn] %d 个群整段读取失败，重新打开快照后重试（第 %d 轮）' % (len(failed), round_no + 1))
             try:
-                vals = SL.decode_some(pl, need)
+                con.close()
             except Exception:
-                ssrc.bad_rows += 1
-                continue
-            vals[0] = rowid
-            seen.add(gk)
-            kept += 1
-            take_row(gk, tuple(vals[:len(KEYS) + 1]))
-            if scanned % 100000 == 0:
-                log('  [scan] 已倒序扫描 %d 行 / 命中 %d 条 / %.1fs' % (scanned, kept, time.time() - t_scan))
-        n = scanned
-        ngroup = len(seen)
-        try:
-            ssrc.close()
-        except Exception:
-            pass
-        log('[source] 倒序流式提取完成：扫描 %d 行，命中 %d 群 / %d 条，坏行 %d，耗时 %.1fs'
-            % (scanned, ngroup, kept, ssrc.bad_rows, time.time() - t_scan))
-
-    pending = [] if stream else list(codes)
-    for round_no in range(3):
-        if not pending:
-            break
-        failed = []
-        for g in pending:
-            rows = run(sql, (g, scan_day0))
-            if rows is None:
-                failed.append(g)
-            else:
+                pass
+            if not snap:
+                ensure_plain(cfg, km, 'nt_msg.db', force=True)
+            con = open_ro(PATHS)
+            pending = failed
+        else:
+            for g in pending:
+                rows = []
+                dl = None
+                try:
+                    dl = [r[0] for r in con.execute(
+                        'SELECT DISTINCT "%s" FROM group_msg_table WHERE "%s"=? ORDER BY "%s"'
+                        % (validate_sql_ident(G['day']), validate_sql_ident(G['group_key']), validate_sql_ident(G['day'])), (g,))]
+                    dl = [d for d in dl if d and d >= max(946684800, scan_day0)]
+                except Exception:
+                    dl = None
+                if not dl:
+                    scan_days = max(1, (now_ts() - scan_day0) // 86400 + 1) if scan_day0 else 400
+                    dl = [scan_day0 + k * 86400 for k in range(scan_days + 1)]
+                for d in dl:
+                    part = run(sql_day, (g, d, d + 86400))
+                    if part is None:
+                        bad_days.append((g, fmt(d, '%Y-%m-%d')))
+                    else:
+                        rows.extend(part)
+                log_warn('  [warn] 群 %s 三轮仍失败，按天补取后缺 %d 天'
+                         % (g, sum(1 for x in bad_days if x[0] == g)))
                 take(g, rows)
                 done_g(g)
-        if not failed:
-            break
-        log_warn('[warn] %d 个群整段读取失败，重新打开快照后重试（第 %d 轮）' % (len(failed), round_no + 1))
-        try:
-            con.close()          # 必须先关掉连接，否则 Windows 不允许覆盖文件
-        except Exception:
-            pass
-        if not snap:
-            # snap 模式下这份明文库是「一致快照」，重解密只会把它换成撕裂版，绝不能做
-            ensure_plain(cfg, km, 'nt_msg.db', force=True)
-        con = open_ro(PATHS)
-        pending = failed
-    else:
-        # 三轮都没救回来：退化为按天取，坏日跳过并记账
-        for g in pending:
-            rows = []
-            dl = None
-            try:
-                dl = [r[0] for r in con.execute(
-                    'SELECT DISTINCT "%s" FROM group_msg_table WHERE "%s"=? ORDER BY "%s"'
-                    % (G['day'], G['group_key'], G['day']), (g,))]
-                dl = [d for d in dl if d and d >= max(946684800, scan_day0)]
-            except Exception:
-                dl = None
-            if not dl:
-                scan_days = max(1, (now_ts() - scan_day0) // 86400 + 1) if scan_day0 else 400
-                dl = [scan_day0 + k * 86400 for k in range(scan_days + 1)]
-            for d in dl:
-                part = run(sql_day, (g, d, d + 86400))
-                if part is None:
-                    bad_days.append((g, fmt(d, '%Y-%m-%d')))
-                else:
-                    rows.extend(part)
-            log_warn('  [warn] 群 %s 三轮仍失败，按天补取后缺 %d 天'
-                     % (g, sum(1 for x in bad_days if x[0] == g)))
-            take(g, rows)
-            done_g(g)
-    if buf:
-        flush_buf(idx, buf, normalizer)
+        if buf:
+            flush_buf(idx, buf)
+            idx.commit()
+        flush_media(idx, mbuf)
         idx.commit()
-    flush_media(idx, mbuf)
-    idx.commit()
 
-    # ── 私聊消息抽取（可选 --include-c2c）────────────────────────────────────
-    c2c_n = 0
-    if include_c2c and con is not None:
-        log('[c2c] 正在扫描私聊消息表 c2c_msg_table ...')
-        sql_c2c = ('SELECT rowid,%s FROM c2c_msg_table WHERE "%s">=? ORDER BY "%s"'
-                   % (cols, G['day'], G['day']))
-        c2c_rows = run(sql_c2c, (scan_day0,))
-        if c2c_rows:
-            cbuf = []
-            for r in c2c_rows:
-                ts = r[I['time']] or 0
-                if ts < cut:
-                    continue
-                max_ts = max(max_ts, ts)
-                d = local(ts) if ts else None
-                uid = r[I['sender_uid']] or ''
-                sqq = int(r[I['sender_qq']] or 0)
-                peer_qq = int(r[I['group_key']] or sqq or 0)
-                peer_uid = str(r[I['group_code_str']] or uid or '')
-                if not peer_qq and peer_uid:
-                    peer_qq = abs(hash(peer_uid)) % 10000000000
-                peer_name = (global_names.get('qq:%d' % peer_qq)
-                             or global_names.get(peer_uid)
-                             or (r[I['card']] or r[I['nick']] or '').strip()
-                             or ('QQ%d' % peer_qq if peer_qq else '私聊联系人'))
-                sender_name = (global_names.get(uid)
-                               or global_names.get('qq:%d' % sqq)
-                               or (r[I['nick']] or r[I['card']] or '').strip()
-                               or ('QQ%d' % sqq if sqq else peer_name))
-                try:
-                    kind, text = decode_body(r[I['body']], sc)
-                except Exception:
-                    kind, text = 'error', ''
-                try:
-                    fwd = decode_forward(r[I['forward']], sc)
-                    if fwd:
-                        block = format_forward(fwd)
-                        text = (text + chr(10) if text else '') + block
-                        kind = 'forward'
-                except Exception:
-                    pass
-                cbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '', d.hour if d else -1,
-                             peer_qq, peer_name, uid, sqq, sender_name,
-                             r[I['direction']] or 0, r[I['msg_type']] or 0, r[I['subtype']] or 0,
-                             kind, text, r[I['reply_seq']] or 0))
-            if c2c_rows and cbuf:
-                idx.executemany('INSERT OR REPLACE INTO c2c_messages VALUES (%s)' % ','.join('?' * 15), cbuf)
-                idx.execute('DELETE FROM c2c_messages WHERE ts < ?', (cut,))
-                idx.execute('DELETE FROM c2c_groups')
-                idx.execute('''INSERT INTO c2c_groups
-                    SELECT group_code, MAX(group_name), MIN(ts), MAX(ts), COUNT(*)
-                    FROM c2c_messages GROUP BY group_code''')
-                idx.commit()
-                c2c_n = len(cbuf)
-        log('[c2c] 私聊扫描新增/更新 %d 条' % c2c_n)
-
-    if con is not None:
-        try:
-            con.close()
-        except Exception:
-            pass
+        # ── 私聊消息抽取（支持 SQL 与流式模式）────────────────────────────────
+        c2c_n = 0
+        if include_c2c:
+            log('[c2c] 正在扫描私聊消息表 c2c_msg_table ...')
+            c2c_rows = []
+            if con is not None:
+                sql_c2c = ('SELECT rowid,%s FROM c2c_msg_table WHERE "%s">=? ORDER BY "%s"'
+                           % (cols, validate_sql_ident(G['day']), validate_sql_ident(G['day'])))
+                c2c_rows = run(sql_c2c, (scan_day0,)) or []
+            elif sdb is not None and 'c2c_msg_table' in sdb.tables:
+                c2c_root, c2c_sql = sdb.tables['c2c_msg_table']
+                c2c_cols = SL.cols_of(c2c_sql)
+                c2c_pos = {c: i for i, c in enumerate(c2c_cols)}
+                c2c_need = {c2c_pos[G[k]]: i + 1 for i, k in enumerate(KEYS) if G[k] in c2c_pos}
+                day_col = G['day']
+                c2c_gate = {c2c_pos[day_col]: 0} if day_col in c2c_pos else {}
+                c2c_old = 0
+                c2c_kept = 0
+                for rowid, pl in sdb.rows_desc(c2c_root):
+                    if c2c_gate:
+                        try:
+                            g_day = SL.decode_some(pl, c2c_gate)[0] or 0
+                        except Exception:
+                            continue
+                        do_break, c2c_old, skip_row = should_early_stop_stream(g_day, scan_day0, c2c_old, c2c_kept, 500)
+                        if do_break:
+                            break
+                        if skip_row:
+                            continue
+                    try:
+                        vals = SL.decode_some(pl, c2c_need)
+                    except Exception:
+                        continue
+                    vals[0] = rowid
+                    if len(vals) < len(KEYS) + 1:
+                        vals.extend([None] * (len(KEYS) + 1 - len(vals)))
+                    c2c_rows.append(tuple(vals[:len(KEYS) + 1]))
+                    c2c_kept += 1
+            if c2c_rows:
+                cbuf = []
+                for r in c2c_rows:
+                    ts = r[I['time']] or 0
+                    if ts < cut:
+                        continue
+                    max_ts = max(max_ts, ts)
+                    d = local(ts) if ts else None
+                    uid = r[I['sender_uid']] or ''
+                    sqq = int(r[I['sender_qq']] or 0)
+                    peer_qq = int(r[I['group_key']] or sqq or 0)
+                    peer_uid = str(r[I['group_code_str']] or uid or '')
+                    if not peer_qq and peer_uid:
+                        peer_qq = _deterministic_peer_qq(peer_uid)
+                    peer_name = (global_names.get('qq:%d' % peer_qq)
+                                 or global_names.get(peer_uid)
+                                 or (r[I['card']] or r[I['nick']] or '').strip()
+                                 or ('QQ%d' % peer_qq if peer_qq else '私聊联系人'))
+                    sender_name = (global_names.get(uid)
+                                   or global_names.get('qq:%d' % sqq)
+                                   or (r[I['nick']] or r[I['card']] or '').strip()
+                                   or ('QQ%d' % sqq if sqq else peer_name))
+                    try:
+                        parsed_c2c = MessageParser.parse_body(r[I['body']], sc)
+                        kind, text = parsed_c2c.raw_kind, parsed_c2c.normalized_text
+                    except Exception:
+                        kind, text = 'error', ''
+                    try:
+                        fwd = decode_forward(r[I['forward']], sc)
+                        if fwd:
+                            block = format_forward(fwd)
+                            text = (text + chr(10) if text else '') + block
+                            kind = 'forward'
+                    except Exception:
+                        pass
+                    cbuf.append((r[0], ts, d.strftime('%Y-%m-%d') if d else '', d.hour if d else -1,
+                                 peer_qq, peer_name, uid, sqq, sender_name,
+                                 r[I['direction']] or 0, r[I['msg_type']] or 0, r[I['subtype']] or 0,
+                                 kind, text, r[I['reply_seq']] or 0))
+                if cbuf:
+                    idx.executemany('INSERT OR REPLACE INTO c2c_messages VALUES (%s)' % ','.join('?' * 15), cbuf)
+                    idx.execute('DELETE FROM c2c_messages WHERE ts < ?', (cut,))
+                    idx.execute('DELETE FROM c2c_groups')
+                    idx.execute('''INSERT INTO c2c_groups
+                        SELECT group_code, MAX(group_name), MIN(ts), MAX(ts), COUNT(*)
+                        FROM c2c_messages GROUP BY group_code''')
+                    idx.commit()
+                    c2c_n = len(cbuf)
+            log('[c2c] 私聊扫描新增/更新 %d 条' % c2c_n)
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+        if ssrc is not None:
+            try:
+                ssrc.close()
+            except Exception:
+                pass
 
     idx.execute('DELETE FROM messages WHERE ts < ?', (cut,))
     idx.execute('DELETE FROM media WHERE ts < ?', (cut,))
     idx.execute('DELETE FROM groups')
     idx.commit()
-    # 切小挡位后文件不会自动收缩（SQLite 不回收已分配的页），VACUUM 一次把空间还给系统
-    if cfg.get('vacuum', False):
+    if getattr(a, 'vacuum', False) or cfg.get('vacuum', False):
         ix_path = os.path.join(CACHE, 'index.db')
         sz0 = os.path.getsize(ix_path) if os.path.exists(ix_path) else 0
         try:
@@ -697,7 +747,7 @@ def build_once(a):
                 idx.autocommit = False
             except Exception:
                 idx.isolation_level = ''
-            sz1 = os.path.getsize(ix_path)
+            sz1 = os.path.getsize(ix_path) if os.path.exists(ix_path) else 0
             log('[storage] 索引 %.1f MB%s' % (sz1 / 1048576.0,
                 ('（已收缩，回收未用页 %.1f MB）' % ((sz0 - sz1) / 1048576.0)) if sz0 and sz1 < sz0 else ''))
         except Exception as e:
@@ -707,13 +757,23 @@ def build_once(a):
         FROM messages GROUP BY group_code''')
     db_max_ts = idx.execute('SELECT COALESCE(MAX(ts), 0) FROM messages').fetchone()[0]
     max_ts = max(max_ts, db_max_ts)
-    for k, v in (('built_at', str(now_ts())), ('cutoff_ts', str(max_ts)),
-                 ('window_days', str(days if days else -1)), ('window_day0', str(day0)),
-                 ('window_label', wlabel), ('source_mode', src_mode),
-                 ('schema_version', sc.get('qq_version', '')),
-                 ('scan_rows', str(n)), ('groups_scanned', str(ngroup)),
-                 ('read_errors', str(nerr)),
-                 ('bad_days', json.dumps(bad_days[:50], ensure_ascii=False))):
+    meta_pairs = [
+        ('built_at', str(now_ts())),
+        ('schema_version', sc.get('qq_version', '')),
+        ('scan_rows', str(n)),
+        ('groups_scanned', str(ngroup)),
+        ('read_errors', str(nerr)),
+        ('bad_days', json.dumps(bad_days[:50], ensure_ascii=False)),
+    ]
+    if not a.only_groups:
+        meta_pairs.extend([
+            ('cutoff_ts', str(max_ts)),
+            ('window_days', str(days if days else -1)),
+            ('window_day0', str(day0)),
+            ('window_label', wlabel),
+            ('source_mode', src_mode),
+        ])
+    for k, v in meta_pairs:
         idx.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (k, v))
     idx.commit()
     if a.rebuild:
@@ -733,12 +793,9 @@ def build_once(a):
         log_warn('[index] !! 有 %d 个「群-日」读不出来（已跳过）: %s'
                  % (len(bad_days), ', '.join('%s@%s' % x for x in bad_days[:10])))
 
-    # 索引已经落盘，此时清明文最安全：群变更登记只读 group_info.db，
-    # 而 cleanup_plain 只删最大的 nt_msg.db。
     if not (getattr(a, 'keep_plain', False) or cfg.get('keep_plain', True)):
         cleanup_plain(cfg)
 
-    # ── 群变更登记：自动识别新入群 / 已退群 / 退群后回归 / 改名 ────────────
     try:
         import ntqq_group_state as GS
         res = GS.scan()
@@ -760,11 +817,10 @@ def build_once(a):
                 log('[groups] 🚪 判定已退群: %s %s' % (r['code'], r.get('name') or ''))
             for code, old, new in res['renamed']:
                 log('[groups] ✏ 改名: %s %s -> %s' % (code, old, new))
-    except Exception as e:                                  # 登记表坏了不该拖垮建索引
+    except Exception as e:
         log_warn('[groups] [warn] 群变更扫描失败（不影响索引）: %r' % e)
 
     print('@@PROGRESS|{"stage":"done","pct":100}', flush=True)
-    idx.close()
     if getattr(a, 'clean_plain', False) or cfg.get('clean_plain_after_build', False):
         clean_plain_dbs(cfg)
 
@@ -782,14 +838,14 @@ def _src_db_fingerprint(cfg):
     return tuple(fp)
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def build_argument_parser():
+    ap = argparse.ArgumentParser(description='构建或增量刷新 QQ 聊天滚动索引 index.db')
     ap.add_argument('--days', type=int, default=None, help='滚动窗口天数（兼容旧参数）')
     ap.add_argument('--window', default=None,
                     help='挡位：all / 365d / 180d / 90d / 30d / 7d（优先于 --days）')
     ap.add_argument('--source', choices=('auto', 'sql', 'stream', 'snap'), default='auto',
-                    help='取数方式：sql=全盘解密（默认、最快）；stream=按需解密（不落盘但慢 2-3 倍）；'
-                         'snap=直接消费 ntqq_snapshot.py 产出的一致快照明文库')
+                    help='取数方式：auto=窗口期优先走 stream 零落盘（默认），all 走 sql；'
+                         'stream=倒序按需解密（零 2GB 临时落盘）；sql=全盘解密；snap=消费一致快照')
     ap.add_argument('--keep-plain', action='store_true',
                     help='保留解密后的全量明文库')
     ap.add_argument('--estimate', action='store_true',
@@ -799,12 +855,17 @@ def main():
     ap.add_argument('--only-groups', default=None, help='逗号分隔的群号，仅重建这些群')
     ap.add_argument('--include-c2c', action='store_true', help='同时索引私聊消息（存入独立 c2c_messages 表）')
     ap.add_argument('--clean-plain', action='store_true', help='构建索引后自动删除 data/plain/ 下的明文库副本')
-    ap.add_argument('--no-fold-repeats', action='store_true', default=False, help='禁用连续相同发言复读折叠')
+    ap.add_argument('--vacuum', action='store_true', help='索引更新后执行 SQLite VACUUM 回收空间')
+    ap.add_argument('--no-fold-repeats', action='store_true', default=False, help='[兼容保留] 索引保留原始消息条数')
     ap.add_argument('--no-filter-images', action='store_true', default=False, help='禁用 <15KB 微小表情图元数据过滤')
     ap.add_argument('--watch', action='store_true', help='持续监听模式：检测源库变动并自动增量刷新索引')
     ap.add_argument('--interval', type=int, default=300, help='--watch 模式的轮询间隔秒数（默认 300s）')
     ap.add_argument('--verbose', action='store_true', help='显示调试日志（同时写到控制台）')
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = build_argument_parser().parse_args()
 
     if a.verbose:
         set_log_level(True)

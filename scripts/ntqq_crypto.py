@@ -18,8 +18,7 @@ import os
 import struct
 import subprocess
 import sys
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 EXT_HEADER_BYTES, PAGE_SIZE, SALT_SIZE, RESERVE_BYTES, IV_BYTES = 1024, 4096, 16, 48, 16
 RKEY_TTL = 6 * 3600
@@ -104,7 +103,7 @@ def protect_key_hex(key_hex: str, use_dpapi: bool = True) -> str:
         return 'dpapi:' + base64.b64encode(enc).decode('ascii')
     except Exception as e:
         core = _get_core()
-        core.log_debug('DPAPI 加密密钥失败，回退明文存储: %r' % e)
+        core.log_warn('DPAPI 加密密钥失败，已回退为明文存储: %r' % e)
         return key_hex
 
 
@@ -113,6 +112,8 @@ def unwrap_key_hex(stored_val: str) -> str:
     if not stored_val:
         return ''
     if stored_val.startswith('dpapi:'):
+        if os.name != 'nt':
+            raise RuntimeError('当前非 Windows 环境，无法解密 DPAPI 保护的密钥')
         enc = base64.b64decode(stored_val[6:])
         return dpapi_decrypt(enc).hex()
     return stored_val
@@ -146,9 +147,7 @@ def save_rkey(rkey: str) -> None:
             core.log_debug('DPAPI 加密 rkey 失败，回退明文存储: %r' % e)
             val = rkey
     try:
-        os.makedirs(os.path.dirname(rkey_cache), exist_ok=True)
-        with open(rkey_cache, 'w', encoding='utf-8') as f:
-            json.dump({'ts': core.now_ts(), 'rkey': val}, f)
+        core.atomic_write_json(rkey_cache, {'ts': core.now_ts(), 'rkey': val}, indent=2)
     except Exception as e:
         core.log_warn('写入 rkey 缓存失败: %r' % e)
 
@@ -163,6 +162,8 @@ def verify_keymap(km_path: str, cfg: Optional[dict] = None) -> Tuple[bool, str]:
     except Exception as e:
         return False, '缓存文件损坏: %s' % e
     key_map, salt_files = km.get('key_map', {}), km.get('salt_files', {})
+    if not key_map or not salt_files:
+        return False, '密钥映射表为空'
     checked = 0
     for sh, files in salt_files.items():
         kh_raw = key_map.get(sh)
@@ -170,10 +171,11 @@ def verify_keymap(km_path: str, cfg: Optional[dict] = None) -> Tuple[bool, str]:
             return False, '缺少 salt %s 的密钥' % sh[:12]
         try:
             kh = unwrap_key_hex(kh_raw)
+            enc = bytes.fromhex(kh)
         except Exception as e:
-            return False, 'DPAPI 解密密钥失败: %s' % e
-        fp = files[0] if files else None
-        if not fp or not os.path.exists(fp):
+            return False, '解密/解析密钥失败: %s' % e
+        fp = next((f for f in (files or ()) if f and os.path.exists(f)), None)
+        if not fp:
             continue
         try:
             with open(fp, 'rb') as f:
@@ -187,7 +189,6 @@ def verify_keymap(km_path: str, cfg: Optional[dict] = None) -> Tuple[bool, str]:
         if salt.hex() != sh:
             return False, 'salt 已变化（%s）' % os.path.basename(fp)
         page1 = raw
-        enc = bytes.fromhex(kh)
         hm = hashlib.pbkdf2_hmac('sha512', enc, bytes(b ^ 0x3a for b in salt), 2, 32)
         de = PAGE_SIZE - RESERVE_BYTES
         content, iv = page1[SALT_SIZE:de], page1[de:de + 16]
@@ -214,8 +215,8 @@ def ensure_keymap(cfg: dict, force: bool = False) -> str:
     try:
         import ntqq_key
         if hasattr(ntqq_key, 'extract_keys'):
-            ntqq_key.extract_keys(qq=str(cfg['account']), output=km)
-            if os.path.exists(km):
+            out = ntqq_key.extract_keys(qq=str(cfg['account']), output=km)
+            if os.path.exists(km) and (out or {}).get('key_map'):
                 return km
     except SystemExit:
         raise
@@ -229,9 +230,16 @@ def ensure_keymap(cfg: dict, force: bool = False) -> str:
         text=True,
         encoding='utf-8',
         errors='replace',
+        timeout=180,
         **_subproc_kwargs(),
     )
-    if r.returncode != 0 or not os.path.exists(km):
+    ok_km = os.path.exists(km)
+    if ok_km:
+        ok_verify, why_verify = verify_keymap(km, cfg)
+        if not ok_verify:
+            ok_km = False
+            core.log_warn('[key] 提取的 key_map 校验未通过: %s' % why_verify)
+    if r.returncode != 0 or not ok_km:
         core.log(r.stdout or '')
         core.log(r.stderr or '')
         raise SystemExit('取密钥失败：请确认 QQ 已登录并正在运行')
@@ -241,74 +249,85 @@ def ensure_keymap(cfg: dict, force: bool = False) -> str:
     return km
 
 
+def _src_latest_mtime(src: str) -> float:
+    """获取源库主文件及其 -wal 的最新修改时间。"""
+    mt = os.path.getmtime(src)
+    wal = src + '-wal'
+    if os.path.exists(wal):
+        try:
+            mt = max(mt, os.path.getmtime(wal))
+        except OSError:
+            pass
+    return mt
+
+
 def ensure_plain(cfg: dict, km: str, name: str, force: bool = False) -> str:
-    """确保 data/plain/<name> 存在且不比源文件旧。返回路径。"""
+    """确保 data/plain/<name> 存在且不比源文件（含 -wal）旧。返回路径。"""
     core = _get_core()
     src = core.src_db(cfg, name)
     if not os.path.exists(src):
         raise SystemExit('源库不存在: %s' % src)
     dst = os.path.join(core.PLAIN, name)
     if os.path.exists(dst) and not force:
-        if os.path.getmtime(dst) >= os.path.getmtime(src):
+        if os.path.getmtime(dst) >= _src_latest_mtime(src):
             return dst
     part = dst + '.part'
-    for stale in (part,):
-        try:
-            if os.path.exists(stale):
-                os.remove(stale)
-        except OSError:
-            pass
     try:
-        import ntqq_decrypt
-        if hasattr(ntqq_decrypt, 'decrypt_db'):
-            ntqq_decrypt.decrypt_db(key_map_path=km, db_name=name, out_path=part)
-            if os.path.exists(part):
-                os.replace(part, dst)
-                return dst
-    except SystemExit:
+        if os.path.exists(part):
+            os.remove(part)
+    except OSError:
+        pass
+    try:
+        try:
+            import ntqq_decrypt
+            if hasattr(ntqq_decrypt, 'decrypt_db'):
+                ntqq_decrypt.decrypt_db(key_map_path=km, db_name=name, out_path=part)
+                if os.path.exists(part):
+                    os.replace(part, dst)
+                    return dst
+        except SystemExit:
+            raise
+        except Exception as e:
+            core.log_debug('进程内调用 ntqq_decrypt.decrypt_db 失败，回退子进程: %r' % e)
+        cmd = [sys.executable, os.path.join(core.HERE, 'ntqq_decrypt.py'),
+               '--key-map', km, '--db', name, '--out', part]
+        tail = []
+        with subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            **_subproc_kwargs(),
+        ) as p:
+            assert p.stdout is not None
+            for line in p.stdout:
+                line = line.rstrip('\r\n')
+                if line.startswith('@@PROGRESS') or line.startswith('src='):
+                    print(line, flush=True)
+                else:
+                    tail.append(line)
+                    if len(tail) > 30:
+                        tail.pop(0)
+            p.wait(timeout=600)
+            rc = p.returncode
+        if rc != 0 or not os.path.exists(part):
+            for line in tail:
+                core.log(line)
+            raise SystemExit('解密失败: %s' % name)
+        for line in tail:
+            if line.startswith('done') or 'size=' in line:
+                core.log('  ' + line.strip())
+        os.replace(part, dst)
+        return dst
+    finally:
         try:
             if os.path.exists(part):
                 os.remove(part)
         except OSError:
             pass
-        raise
-    except Exception as e:
-        core.log_debug('进程内调用 ntqq_decrypt.decrypt_db 失败，回退子进程: %r' % e)
-    cmd = [sys.executable, os.path.join(core.HERE, 'ntqq_decrypt.py'),
-           '--key-map', km, '--db', name, '--out', part]
-    p = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        bufsize=1,
-        **_subproc_kwargs(),
-    )
-    tail = []
-    for line in p.stdout:
-        line = line.rstrip('\r\n')
-        if line.startswith('@@PROGRESS') or line.startswith('src='):
-            print(line, flush=True)
-        else:
-            tail.append(line)
-            if len(tail) > 30:
-                tail.pop(0)
-    p.wait()
-    if p.returncode != 0 or not os.path.exists(part):
-        for line in tail:
-            core.log(line)
-        try:
-            os.remove(part)
-        except OSError:
-            pass
-        raise SystemExit('解密失败: %s' % name)
-    for line in tail:
-        if line.startswith('done') or 'size=' in line:
-            core.log('  ' + line.strip())
-    os.replace(part, dst)
-    return dst
 
 
 def cleanup_plain(cfg: dict) -> int:

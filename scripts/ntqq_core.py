@@ -5,7 +5,8 @@
 职责：路径/配置、schema 指纹校验、SQLCipher 解密编排、私有表读取、
       40800 protobuf 解码、昵称/群名解析、行级容错游标。
 """
-import json, logging, logging.handlers, os, re, sqlite3, struct, subprocess, sys, time
+import contextlib, json, logging, logging.handlers, os, re, sqlite3, sys, tempfile, time
+from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 
 # ── 目录布局 ──────────────────────────────────────────────────────────────
@@ -58,7 +59,10 @@ RUN = os.path.join(ROOT, 'run')
 LOGS = os.path.join(ROOT, 'logs')
 CACHE = DATA                                   # 兼容旧名
 TZ = timezone(timedelta(hours=8))              # 群聊按北京时间理解
+_EPOCH_TZ = datetime(1970, 1, 1, tzinfo=timezone.utc).astimezone(TZ)
 EXT_HEADER_BYTES, PAGE_SIZE, SALT_SIZE, RESERVE_BYTES, IV_BYTES = 1024, 4096, 16, 48, 16
+AT_MENTION_RE = re.compile(r'@([^\s@|]{1,16})')
+ALLOWED_CDN_SUFFIXES = ('.nt.qq.com.cn', '.qpic.cn')
 
 DEFAULT_CONFIG = {
     "root": "",                       # 空 = 用 _default_root()（Windows: D:/QQChatCache）
@@ -68,8 +72,118 @@ DEFAULT_CONFIG = {
     "index_days": 30,
     "decrypt": ["nt_msg.db", "group_info.db", "profile_info.db"],
     "class_groups": [],
+    "class_group_names": {},
+    "group_aliases": {},
     "glossary_autoupdate": True,
+    "include_c2c": False,
+    "clean_plain_after_build": False,
 }
+
+
+def reload_paths(root_path=None):
+    """刷新 ntqq_core 的目录路径常量（供 ntqq_init 等动态切换根目录）。"""
+    global ROOT, DATA, PLAIN, INDEX_DB, KEYS, MEDIA, KNOW, GLOSSARY, OUTPUT, RUN, LOGS, CACHE, RKEY_CACHE
+    norm_root = str(root_path or _default_root()).replace('\\', '/')
+    ROOT = norm_root
+    DATA = os.path.join(ROOT, 'data')
+    PLAIN = os.path.join(DATA, 'plain')
+    INDEX_DB = os.path.join(DATA, 'index.db')
+    KEYS = os.path.join(ROOT, 'keys')
+    MEDIA = os.path.join(ROOT, 'media')
+    KNOW = os.path.join(ROOT, 'knowledge')
+    GLOSSARY = os.path.join(KNOW, 'glossary')
+    OUTPUT = os.path.join(ROOT, 'output')
+    RUN = os.path.join(ROOT, 'run')
+    LOGS = os.path.join(ROOT, 'logs')
+    CACHE = DATA
+    RKEY_CACHE = os.path.join(DATA, 'rkey.json')
+
+
+def validate_sql_ident(ident):
+    """校验 SQL 表名/列名标识符，防止动态标识符拼接注入。"""
+    s = str(ident or '')
+    if not re.fullmatch(r'[A-Za-z0-9_]+', s):
+        raise ValueError('非法 SQL 标识符: %r' % (ident,))
+    return s
+
+
+def is_allowed_cdn_host(host):
+    """校验图片 CDN 主机名是否属于腾讯官方域。"""
+    h = str(host or '').strip().lower().split(':', 1)[0]
+    if not h or '/' in h or '@' in h or '\\' in h:
+        return False
+    return any(h == sfx.lstrip('.') or h.endswith(sfx) for sfx in ALLOWED_CDN_SUFFIXES)
+
+
+def row_to_dict(row):
+    """将 dict / sqlite3.Row / dataclass / 对象统一转为 dict。"""
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, 'keys'):
+        return {k: row[k] for k in row.keys()}
+    if is_dataclass(row) and not isinstance(row, type):
+        return asdict(row)
+    if hasattr(row, '__dict__'):
+        return dict(vars(row))
+    return {}
+
+
+def get_row_val(row, keys, default=None):
+    """安全获取 dict / sqlite3.Row / 对象属性中首个匹配的字段值。"""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        for k in keys:
+            if k in row and row[k] is not None:
+                return row[k]
+        return default
+    if hasattr(row, 'keys'):
+        row_keys = set(row.keys())
+        for k in keys:
+            if k in row_keys and row[k] is not None:
+                return row[k]
+        return default
+    for k in keys:
+        val = getattr(row, k, None)
+        if val is not None:
+            return val
+    return default
+
+
+def safe_local_dt(ts):
+    """安全将 Unix 时间戳转为北京时间 datetime；非法或越界时间戳返回 None。"""
+    try:
+        t = float(ts)
+        if t <= 0:
+            return None
+        return _EPOCH_TZ + timedelta(seconds=t)
+    except (OSError, OverflowError, ValueError, TypeError):
+        return None
+
+
+def atomic_write_text(path, content, encoding='utf-8'):
+    """原子写文本文件（同目录临时文件 + os.replace）。"""
+    abs_path = os.path.abspath(path)
+    parent = os.path.dirname(abs_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent or '.', prefix='.tmp_', suffix='.part')
+    try:
+        with os.fdopen(fd, 'w', encoding=encoding) as f:
+            f.write(content)
+        os.replace(tmp_path, abs_path)
+    except BaseException:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(path, data, indent=2):
+    """原子写 JSON 文件。"""
+    atomic_write_text(path, json.dumps(data, indent=indent, ensure_ascii=False), encoding='utf-8')
 
 
 def _force_utf8_stdout():
@@ -177,7 +291,7 @@ def validate_config(cfg, require_account=True):
         elif not acc.isdigit():
             errors.append('config.json 中的 "account" (%r) 应为纯数字 QQ 号' % acc)
     days = cfg.get('index_days', 30)
-    if not isinstance(days, (int, float)) or days <= 0:
+    if isinstance(days, bool) or not isinstance(days, (int, float)) or days <= 0:
         errors.append('config.json 中的 "index_days" (%r) 必须为正数' % days)
     dec = cfg.get('decrypt')
     if not isinstance(dec, list) or not dec:
@@ -186,8 +300,7 @@ def validate_config(cfg, require_account=True):
 
 
 def save_config(cfg):
-    with open(CONFIG, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    atomic_write_json(CONFIG, cfg, indent=2)
 
 
 def ensure_dirs():
@@ -213,7 +326,8 @@ def live_structure(con):
     out = {}
     for name, in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE '%_fts%'"):
         try:
-            cols = sorted(c[1] for c in con.execute('PRAGMA table_info("%s")' % name))
+            safe_name = str(name).replace('"', '""')
+            cols = sorted(c[1] for c in con.execute('PRAGMA table_info("%s")' % safe_name))
         except sqlite3.DatabaseError:
             cols = []
         out[name] = cols
@@ -249,7 +363,7 @@ def now_ts():
 
 
 def local(ts):
-    return datetime.fromtimestamp(ts, TZ)
+    return _EPOCH_TZ + timedelta(seconds=float(ts))
 
 
 def fmt(ts, pat='%m-%d %H:%M'):
@@ -327,7 +441,11 @@ from ntqq_crypto import (
 
 def db_image_url(host, path, rkey):
     """拼多媒体 CDN 的原图地址：https://<host><path>&rkey=<rkey>"""
-    return 'https://%s%s&rkey=%s' % (host, path, rkey)
+    h = str(host or '').strip()
+    p = str(path or '').strip()
+    if not is_allowed_cdn_host(h) or not p.startswith('/'):
+        raise ValueError('非法 CDN host 或 path: host=%r path=%r' % (host, path))
+    return 'https://%s%s&rkey=%s' % (h, p, rkey)
 
 
 def sniff_ext(data):
@@ -375,14 +493,19 @@ def _normalize_qq_data_dir(d, acc=''):
     if not d:
         return ''
     d = os.path.expanduser(d).replace('\\', '/').rstrip('/')
+    saw_nt_qq = False
     if os.path.basename(d).lower() == 'nt_db':
         d = os.path.dirname(d)
+        saw_nt_qq = True
     if os.path.basename(d).lower() == 'nt_qq':
         d = os.path.dirname(d)
+        saw_nt_qq = True
     base = os.path.basename(d)
     if base.lower() == 'tencent files':
         return d
-    if (acc and acc != 'YOUR_QQ' and base == acc) or (base.isdigit() and len(base) >= 5) or os.path.isdir(os.path.join(d, 'nt_qq', 'nt_db')):
+    if (acc and acc != 'YOUR_QQ' and base == acc) or (
+        base.isdigit() and len(base) >= 5 and (saw_nt_qq or os.path.isdir(os.path.join(d, 'nt_qq', 'nt_db')))
+    ) or os.path.isdir(os.path.join(d, 'nt_qq', 'nt_db')):
         d = os.path.dirname(d)
     return d
 
@@ -439,43 +562,59 @@ def build_names(cfg):
 
     p = os.path.join(PLAIN, NS['group_list']['db'])
     if os.path.exists(p):
-        con = open_ro(p)
-        for table_key in ('group_list', 'group_detail'):
-            s = NS[table_key]
+        with contextlib.closing(open_ro(p)) as con:
+            for table_key in ('group_list', 'group_detail'):
+                s = NS[table_key]
+                try:
+                    t_name = validate_sql_ident(s['table'])
+                    c_code = validate_sql_ident(s['code'])
+                    c_name = validate_sql_ident(s['name'])
+                    for code, name in con.execute('SELECT "%s","%s" FROM "%s"' % (c_code, c_name, t_name)):
+                        if code and name:
+                            try:
+                                group_names[int(code)] = str(name)
+                            except (ValueError, TypeError):
+                                pass
+                except (sqlite3.DatabaseError, ValueError) as e:
+                    log_warn('  [warn] %s 读群名失败: %s' % (s['table'], e))
+            s = NS['group_member']
             try:
-                for code, name in con.execute('SELECT "%s","%s" FROM "%s"' % (s['code'], s['name'], s['table'])):
-                    if code and name:
-                        group_names[int(code)] = str(name)
-            except sqlite3.DatabaseError as e:
-                log_warn('  [warn] %s 读群名失败: %s' % (s['table'], e))
-        s = NS['group_member']
-        try:
-            for g, uid, card, nick in con.execute(
-                    'SELECT "%s","%s","%s","%s" FROM "%s"' % (s['group'], s['uid'], s['card'], s['nick'], s['table'])):
-                if g and uid:
-                    nm = (card or '').strip() or (nick or '').strip()
-                    if nm:
-                        member_names[(int(g), uid)] = nm
-        except sqlite3.DatabaseError as e:
-            log_warn('  [warn] group_member3 读群名片失败: %s' % e)
-        con.close()
+                t_name = validate_sql_ident(s['table'])
+                c_grp = validate_sql_ident(s['group'])
+                c_uid = validate_sql_ident(s['uid'])
+                c_card = validate_sql_ident(s['card'])
+                c_nick = validate_sql_ident(s['nick'])
+                for g, uid, card, nick in con.execute(
+                        'SELECT "%s","%s","%s","%s" FROM "%s"' % (c_grp, c_uid, c_card, c_nick, t_name)):
+                    if g and uid:
+                        nm = (card or '').strip() or (nick or '').strip()
+                        if nm:
+                            try:
+                                member_names[(int(g), uid)] = nm
+                            except (ValueError, TypeError):
+                                pass
+            except (sqlite3.DatabaseError, ValueError) as e:
+                log_warn('  [warn] group_member3 读群名片失败: %s' % e)
 
     p = os.path.join(PLAIN, NS['profile']['db'])
     if os.path.exists(p):
-        con = open_ro(p)
-        s = NS['profile']
-        try:
-            for uid, qq, nick in con.execute('SELECT "%s","%s","%s" FROM "%s"' % (s['uid'], s['qq'], s['nick'], s['table'])):
-                if uid and nick:
-                    global_names[uid] = str(nick)
-                if qq and nick:
-                    try:
-                        global_names['qq:%d' % int(qq)] = str(nick)
-                    except (ValueError, TypeError):
-                        pass
-        except sqlite3.DatabaseError as e:
-            log_warn('  [warn] profile_info_v6 读昵称失败: %s' % e)
-        con.close()
+        with contextlib.closing(open_ro(p)) as con:
+            s = NS['profile']
+            try:
+                t_name = validate_sql_ident(s['table'])
+                c_uid = validate_sql_ident(s['uid'])
+                c_qq = validate_sql_ident(s['qq'])
+                c_nick = validate_sql_ident(s['nick'])
+                for uid, qq, nick in con.execute('SELECT "%s","%s","%s" FROM "%s"' % (c_uid, c_qq, c_nick, t_name)):
+                    if uid and nick:
+                        global_names[uid] = str(nick)
+                    if qq and nick:
+                        try:
+                            global_names['qq:%d' % int(qq)] = str(nick)
+                        except (ValueError, TypeError):
+                            pass
+            except (sqlite3.DatabaseError, ValueError) as e:
+                log_warn('  [warn] profile_info_v6 读昵称失败: %s' % e)
     return group_names, member_names, global_names
 
 

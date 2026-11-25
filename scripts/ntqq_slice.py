@@ -11,6 +11,7 @@
 即可把指定窗口的行直接写进索引，全程不产生 4GB 中间文件。
 """
 import os, struct, sys, time
+from collections import OrderedDict
 try:
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 except ImportError:
@@ -43,13 +44,18 @@ class Src:
             self.aes_algo = None
         self.size = os.path.getsize(path)
         self.npages = max(0, (self.size - EXT_HEADER) // PAGE_SIZE)
-        self.cache = {}
-        self.order = []
-        self.cap = cache
+        self.cache = OrderedDict()
+        self.cap = max(1, int(cache))
         self.hits = 0
         self.miss = 0
         self.bad_pages = 0
         self.bad_rows = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def _dec(self, body):
         if Cipher is None:
@@ -70,6 +76,7 @@ class Src:
         p = self.cache.get(i)
         if p is not None:
             self.hits += 1
+            self.cache.move_to_end(i)
             return p
         self.miss += 1
         self.f.seek(EXT_HEADER + i * PAGE_SIZE)
@@ -83,10 +90,9 @@ class Src:
             p = self._dec(raw)
         if len(p) < PAGE_SIZE:
             p += b'\x00' * (PAGE_SIZE - len(p))
-        if len(self.order) >= self.cap:
-            self.cache.pop(self.order.pop(0), None)
+        if len(self.cache) >= self.cap:
+            self.cache.popitem(last=False)
         self.cache[i] = p
-        self.order.append(i)
         return p
 
     def close(self):
@@ -145,18 +151,21 @@ class Db:
         return out
 
     def overflow(self, first, need):
-        buf = b''
+        chunks = []
+        got = 0
         pg = first
         guard = 0
-        while pg and len(buf) < need:
+        while pg and got < need:
             guard += 1
             if guard > 20000:
                 raise ValueError('overflow chain too long')
             p = self.s.page(pg)
             nxt = int.from_bytes(p[:4], 'big')
-            buf += p[4: self.usable]
+            part = p[4: self.usable]
+            chunks.append(part)
+            got += len(part)
             pg = nxt
-        return buf[:need]
+        return b''.join(chunks)[:need]
 
     def page_info(self, pno):
         p = self.s.page(pno)
@@ -204,13 +213,13 @@ class Db:
                     except Exception:
                         self.s.bad_rows += 1
             elif t == 5:
-                for c in cells:
+                if right:
+                    stack.append(right)
+                for c in reversed(cells):
                     try:
                         stack.append(int.from_bytes(p[c:c + 4], 'big'))
                     except Exception:
                         self.s.bad_pages += 1
-                if right:
-                    stack.append(right)
             elif t == 10:
                 for c in cells:
                     try:
@@ -272,10 +281,18 @@ class Db:
                 self.s.bad_rows += 1
 
     def _idx_payload(self, p, c):
-        """索引叶子 cell：返回原始 payload（不含 rowid 解析）。"""
+        """索引叶子 cell：返回索引记录 payload bytes。"""
         i = c
         plen, i = varint(p, i)
-        return plen, i
+        maxlocal = ((self.usable - 12) * 64 // 255) - 23
+        if plen <= maxlocal:
+            return p[i:i + plen]
+        minlocal = ((self.usable - 12) * 32 // 255) - 23
+        surplus = minlocal + (plen - minlocal) % (self.usable - 4)
+        local = surplus if surplus <= maxlocal else minlocal
+        head = p[i:i + local]
+        ovf = int.from_bytes(p[i + local:i + local + 4], 'big')
+        return head + self.overflow(ovf, plen - local)
 
 
 def decode_record(buf):
@@ -288,32 +305,8 @@ def decode_record(buf):
     vals = []
     k = hl
     for t in types:
-        if t == 0:
-            vals.append(None)
-        elif t == 1:
-            vals.append(struct.unpack('>b', buf[k:k + 1])[0]); k += 1
-        elif t == 2:
-            vals.append(struct.unpack('>h', buf[k:k + 2])[0]); k += 2
-        elif t == 3:
-            v = struct.unpack('>i', buf[k:k + 3] + b'\x00')[0]; k += 3; vals.append(v)
-        elif t == 4:
-            vals.append(struct.unpack('>i', buf[k:k + 4])[0]); k += 4
-        elif t == 5:
-            v = struct.unpack('>q', buf[k:k + 6] + b'\x00\x00')[0]; k += 6; vals.append(v)
-        elif t == 6:
-            vals.append(struct.unpack('>q', buf[k:k + 8])[0]); k += 8
-        elif t == 7:
-            vals.append(struct.unpack('>d', buf[k:k + 8])[0]); k += 8
-        elif t == 8:
-            vals.append(0)
-        elif t == 9:
-            vals.append(1)
-        elif t >= 12 and t % 2 == 0:
-            n = (t - 12) // 2; vals.append(buf[k:k + n]); k += n
-        elif t >= 13:
-            n = (t - 13) // 2; vals.append(buf[k:k + n].decode('utf-8', 'replace')); k += n
-        else:
-            vals.append(None)
+        vals.append(stype_val(buf, k, t))
+        k += stype_size(t)
     return vals
 
 
@@ -337,17 +330,17 @@ def stype_val(buf, k, t):
     if t == 0:
         return None
     if t == 1:
-        return struct.unpack('>b', buf[k:k + 1])[0]
+        return int.from_bytes(buf[k:k + 1], 'big', signed=True)
     if t == 2:
-        return struct.unpack('>h', buf[k:k + 2])[0]
+        return int.from_bytes(buf[k:k + 2], 'big', signed=True)
     if t == 3:
-        return struct.unpack('>i', b'\x00' + buf[k:k + 3])[0]
+        return int.from_bytes(buf[k:k + 3], 'big', signed=True)
     if t == 4:
-        return struct.unpack('>i', buf[k:k + 4])[0]
+        return int.from_bytes(buf[k:k + 4], 'big', signed=True)
     if t == 5:
-        return struct.unpack('>q', b'\x00\x00' + buf[k:k + 6])[0]
+        return int.from_bytes(buf[k:k + 6], 'big', signed=True)
     if t == 6:
-        return struct.unpack('>q', buf[k:k + 8])[0]
+        return int.from_bytes(buf[k:k + 8], 'big', signed=True)
     if t == 7:
         return struct.unpack('>d', buf[k:k + 8])[0]
     if t == 8:
@@ -437,11 +430,11 @@ def cols_of(sql):
     return out
 
 
-if __name__ == '__main__':
+def main():
     import json, argparse
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ntqq_core import unwrap_key_hex, KEYS as KEYS_DIR
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description='在加密 SQLCipher 库上按需解密探测与抽行')
     ap.add_argument('--key-map', default=os.path.join(KEYS_DIR, 'key_map.json'))
     ap.add_argument('--db', default='nt_msg.db')
     ap.add_argument('--probe', action='store_true')
@@ -449,34 +442,43 @@ if __name__ == '__main__':
     with open(a.key_map, encoding='utf-8') as fh:
         km = json.load(fh)
     src = key = None
-    for sh, files in km['salt_files'].items():
+    for sh, files in km.get('salt_files', {}).items():
         for f in files:
             if os.path.basename(f) == a.db:
                 src, key = f, bytes.fromhex(unwrap_key_hex(km['key_map'][sh]))
     if not src:
-        print('key_map 里没有', a.db); sys.exit(1)
+        print('key_map 里没有', a.db)
+        raise SystemExit(1)
     print('src =', src)
     t0 = time.time()
-    s = Src(src, key)
-    print('页数 %d，大小 %.2f GB' % (s.npages, s.size / 1024 ** 3))
-    db = Db(s)
-    print('page_size=%d reserved=%d usable=%d  耗时 %.2fs' % (db.page_size, db.reserved, db.usable, time.time() - t0))
-    load_master(db)
-    print('表 %d 个' % len(db.tables))
-    for n, (root, sql) in db.tables.items():
-        if n in ('group_msg_table',) or 'group' in n:
-            print('  %-28s root=%-8d 列数=%d' % (n, root, len(cols_of(sql or ''))))
-    if a.probe:
-        root, sql = db.tables.get('group_msg_table', (None, None))
-        print()
-        print('group_msg_table 列（前 20）:', cols_of(sql)[:20])
-        t0 = time.time()
-        lv = db.leaves(root)
-        print('叶子页 %d 个（%.1f%% 的库），耗时 %.1fs' % (len(lv), 100.0 * len(lv) / s.npages, time.time() - t0))
-        t0 = time.time()
-        n = 0
-        for _ in db.rows(root):
-            n += 1
-            if n >= 2000:
-                break
-        print('前 %d 行读取耗时 %.2fs（页缓存命中 %d / 未命中 %d）' % (n, time.time() - t0, s.hits, s.miss))
+    with Src(src, key) as s:
+        print('页数 %d，大小 %.2f GB' % (s.npages, s.size / 1024 ** 3))
+        db = Db(s)
+        print('page_size=%d reserved=%d usable=%d  耗时 %.2fs' % (db.page_size, db.reserved, db.usable, time.time() - t0))
+        load_master(db)
+        print('表 %d 个' % len(db.tables))
+        for n, (root, sql) in db.tables.items():
+            if n in ('group_msg_table',) or 'group' in n:
+                print('  %-28s root=%-8d 列数=%d' % (n, root, len(cols_of(sql or ''))))
+        if a.probe:
+            root, sql = db.tables.get('group_msg_table', (None, None))
+            if root is None or not sql:
+                print('未找到 group_msg_table，跳过 probe')
+                return
+            print()
+            print('group_msg_table 列（前 20）:', cols_of(sql)[:20])
+            t0 = time.time()
+            lv = db.leaves(root)
+            pct = (100.0 * len(lv) / s.npages) if s.npages else 0.0
+            print('叶子页 %d 个（%.1f%% 的库），耗时 %.1fs' % (len(lv), pct, time.time() - t0))
+            t0 = time.time()
+            n = 0
+            for _ in db.rows(root):
+                n += 1
+                if n >= 2000:
+                    break
+            print('前 %d 行读取耗时 %.2fs（页缓存命中 %d / 未命中 %d）' % (n, time.time() - t0, s.hits, s.miss))
+
+
+if __name__ == '__main__':
+    main()

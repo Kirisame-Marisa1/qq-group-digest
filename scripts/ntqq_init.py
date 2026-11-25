@@ -91,7 +91,7 @@ def detect_qq_exe():
                                 val, _ = winreg.QueryValueEx(k, val_name)
                                 if not val or not isinstance(val, str):
                                     continue
-                                clean = val.strip().strip('"').split(',')[0].strip()
+                                clean = val.strip().split(',')[0].strip().strip('"')
                                 if clean.lower().endswith('qq.exe'):
                                     candidates.insert(0, clean)
                                 elif os.path.isdir(clean):
@@ -113,19 +113,7 @@ def detect_qq_exe():
 
 def _sync_core_dirs(root_path):
     """同步更新 ntqq_core 的目录全局变量并创建目录结构。"""
-    norm_root = str(root_path or ntqq_core._default_root()).replace('\\', '/')
-    ntqq_core.ROOT = norm_root
-    ntqq_core.DATA = os.path.join(norm_root, 'data')
-    ntqq_core.PLAIN = os.path.join(ntqq_core.DATA, 'plain')
-    ntqq_core.INDEX_DB = os.path.join(ntqq_core.DATA, 'index.db')
-    ntqq_core.KEYS = os.path.join(norm_root, 'keys')
-    ntqq_core.MEDIA = os.path.join(norm_root, 'media')
-    ntqq_core.KNOW = os.path.join(norm_root, 'knowledge')
-    ntqq_core.GLOSSARY = os.path.join(ntqq_core.KNOW, 'glossary')
-    ntqq_core.OUTPUT = os.path.join(norm_root, 'output')
-    ntqq_core.RUN = os.path.join(norm_root, 'run')
-    ntqq_core.LOGS = os.path.join(norm_root, 'logs')
-    ntqq_core.CACHE = ntqq_core.DATA
+    ntqq_core.reload_paths(root_path)
     ensure_dirs()
 
 
@@ -153,6 +141,8 @@ def init_project(qq=None, root=None, include_c2c=False, base_dir=None, non_inter
     chosen_qq = None
     if qq is not None and str(qq).strip():
         chosen_qq = str(qq).strip()
+        if not chosen_qq.isdigit():
+            raise SystemExit('无效 QQ 号: %r（应为纯数字）' % chosen_qq)
         log('[init] 使用命令行指定的 QQ 号: %s' % chosen_qq)
     elif accounts:
         if len(accounts) == 1 or non_interactive or not sys.stdin.isatty():

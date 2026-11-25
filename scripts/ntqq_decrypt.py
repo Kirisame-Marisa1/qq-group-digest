@@ -46,7 +46,6 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
     if src is None or key_bytes is None:
         log('ERROR: %s not in key_map' % db_name)
         raise SystemExit(1)
-    KEY = key_bytes
     aes_algo = algorithms.AES(key_bytes)
 
     # 使用 SafeDBSnapshot 进行安全热拷贝
@@ -58,44 +57,57 @@ def decrypt_db(key_map_path, db_name, out_path, max_mb=0, use_snapshot=True):
         except Exception as e:
             log('warn: 创建快照失败，回退直接读取: %s' % e)
 
-    with snapshot_ctx as snap_src:
-        actual_src = str(snap_src) if snap_src else src
-        total = os.path.getsize(actual_src)
-        pages = ((min(total, int(max_mb * 1048576)) if max_mb else total) - EXT_HEADER) // PAGE_SIZE
-        d = os.path.dirname(os.path.abspath(out_path))
-        if d:
-            os.makedirs(d, exist_ok=True)
-        log('src=%s size=%.2fGB pages=%d' % (actual_src, total / 1073741824.0, pages))
-        t0 = time.time()
-        with open(actual_src, 'rb', buffering=1048576) as fi, open(out_path, 'wb', buffering=1048576) as fo:
-            fi.seek(EXT_HEADER)
-            CHUNK_PAGES = 64  # 256KB 批量预分配缓冲区
-            i = 0
-            while i < pages:
-                batch_pages = min(CHUNK_PAGES, pages - i)
-                chunk = fi.read(batch_pages * PAGE_SIZE)
-                if not chunk:
-                    break
-                n_got = len(chunk) // PAGE_SIZE
-                if n_got == 0:
-                    break
-                out_chunk = bytearray(n_got * PAGE_SIZE)
-                for p_idx in range(n_got):
-                    curr_p = i + p_idx
-                    raw = chunk[p_idx * PAGE_SIZE : (p_idx + 1) * PAGE_SIZE]
-                    offset = p_idx * PAGE_SIZE
-                    if curr_p == 0:
-                        pt = plain(raw[SALT_SIZE:], aes_algo)
-                        out_chunk[offset : offset + 16] = SQLITE_HEADER
-                        out_chunk[offset + 16 : offset + 16 + len(pt)] = pt
-                    else:
-                        pt = plain(raw, aes_algo)
-                        out_chunk[offset : offset + len(pt)] = pt
-                fo.write(out_chunk)
-                i += n_got
-                if (i & 8191) < CHUNK_PAGES or i >= pages:
-                    print('@@PROGRESS|{"stage":"decrypt","file":"%s","done":%d,"total":%d,"pct":%.1f}'
-                          % (db_name, min(i, pages), pages, min(i, pages) * 100.0 / max(1, pages)), flush=True)
+    tmp_out = out_path + '.tmp'
+    try:
+        with snapshot_ctx as snap_src:
+            actual_src = str(snap_src) if snap_src else src
+            total = os.path.getsize(actual_src)
+            limit_bytes = min(total, int(max_mb * 1048576)) if max_mb else total
+            pages = (limit_bytes - EXT_HEADER) // PAGE_SIZE
+            if pages <= 0:
+                raise ValueError('源文件过小或 max_mb 过小，无法解密页面: total=%d' % total)
+            d = os.path.dirname(os.path.abspath(out_path))
+            if d:
+                os.makedirs(d, exist_ok=True)
+            log('src=%s size=%.2fGB pages=%d' % (actual_src, total / 1073741824.0, pages))
+            t0 = time.time()
+            with open(actual_src, 'rb', buffering=1048576) as fi, open(tmp_out, 'wb', buffering=1048576) as fo:
+                fi.seek(EXT_HEADER)
+                CHUNK_PAGES = 64  # 256KB 批量预分配缓冲区
+                i = 0
+                while i < pages:
+                    batch_pages = min(CHUNK_PAGES, pages - i)
+                    chunk = fi.read(batch_pages * PAGE_SIZE)
+                    if not chunk:
+                        break
+                    n_got = len(chunk) // PAGE_SIZE
+                    if n_got == 0:
+                        break
+                    out_chunk = bytearray(n_got * PAGE_SIZE)
+                    for p_idx in range(n_got):
+                        curr_p = i + p_idx
+                        raw = chunk[p_idx * PAGE_SIZE : (p_idx + 1) * PAGE_SIZE]
+                        offset = p_idx * PAGE_SIZE
+                        if curr_p == 0:
+                            pt = plain(raw[SALT_SIZE:], aes_algo)
+                            out_chunk[offset : offset + 16] = SQLITE_HEADER
+                            out_chunk[offset + 16 : offset + 16 + len(pt)] = pt
+                        else:
+                            pt = plain(raw, aes_algo)
+                            out_chunk[offset : offset + len(pt)] = pt
+                    fo.write(out_chunk)
+                    i += n_got
+                    if (i & 8191) < CHUNK_PAGES or i >= pages:
+                        print('@@PROGRESS|{"stage":"decrypt","file":"%s","done":%d,"total":%d,"pct":%.1f}'
+                              % (db_name, min(i, pages), pages, min(i, pages) * 100.0 / max(1, pages)), flush=True)
+        os.replace(tmp_out, out_path)
+    except BaseException:
+        try:
+            if os.path.exists(tmp_out):
+                os.remove(tmp_out)
+        except OSError:
+            pass
+        raise
     sz = os.path.getsize(out_path)
     log('done %.1fs out=%.2fGB' % (time.time() - t0, sz / 1073741824.0))
     with open(out_path, 'rb') as f:

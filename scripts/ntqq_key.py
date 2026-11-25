@@ -8,11 +8,37 @@ NTQQ SQLCipher 密钥提取（只扫内存拿 key，不解密）
 本脚本相对原版做的唯一删减：去掉「自动解密所有 db」那一步（原版会一次性把 5.4GB 读进内存）。
 """
 import ctypes, ctypes.wintypes as wt
-from ctypes import windll, byref, sizeof, create_string_buffer
+from ctypes import byref, sizeof, create_string_buffer
 import struct, hashlib, hmac as hmac_mod, os, sys, json, argparse, time
 
+windll = getattr(ctypes, 'windll', None)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import load_config, qq_path  # noqa: E402
+from ntqq_core import (  # noqa: E402
+    atomic_write_json, load_config, qq_path,
+    EXT_HEADER_BYTES as EXT_HEADER, PAGE_SIZE, SALT_SIZE, RESERVE_BYTES as RESERVE, IV_BYTES as IV_SIZE,
+)
+
+if os.name == 'nt' and windll is not None:
+    _k32 = windll.kernel32
+    _k32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
+    _k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    _k32.Process32First.argtypes = [wt.HANDLE, ctypes.c_void_p]
+    _k32.Process32First.restype = wt.BOOL
+    _k32.Process32Next.argtypes = [wt.HANDLE, ctypes.c_void_p]
+    _k32.Process32Next.restype = wt.BOOL
+    _k32.Module32First.argtypes = [wt.HANDLE, ctypes.c_void_p]
+    _k32.Module32First.restype = wt.BOOL
+    _k32.Module32Next.argtypes = [wt.HANDLE, ctypes.c_void_p]
+    _k32.Module32Next.restype = wt.BOOL
+    _k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    _k32.OpenProcess.restype = wt.HANDLE
+    _k32.VirtualQueryEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
+    _k32.VirtualQueryEx.restype = ctypes.c_size_t
+    _k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    _k32.ReadProcessMemory.restype = wt.BOOL
+    _k32.CloseHandle.argtypes = [wt.HANDLE]
+    _k32.CloseHandle.restype = wt.BOOL
 
 PROCESS_VM_READ           = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -23,11 +49,11 @@ MEM_COMMIT                = 0x1000
 READABLE_PROTS            = {0x02, 0x04, 0x06, 0x08, 0x20, 0x40, 0x60, 0x80}
 MAX_REGION                = 256 * 1024 * 1024
 
-EXT_HEADER, PAGE_SIZE, SALT_SIZE, KEY_SIZE = 1024, 4096, 16, 32
-IV_SIZE, HMAC_SIZE, RESERVE, HMAC_MASK = 16, 20, 48, 0x3a
+KEY_SIZE, HMAC_SIZE, HMAC_MASK = 32, 20, 0x3a
 KDF_ITER, FAST_ITER = 4000, 2
 PRE_LOGIN_KEY = b"BD156D6710D54D8782F4"
 HEX_CHARS = set(b'0123456789abcdefABCDEF')
+INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 
 class MEMORY_BASIC_INFORMATION(ctypes.Structure):
@@ -51,32 +77,40 @@ class MODULEENTRY32(ctypes.Structure):
 
 
 def find_qq_pids():
+    if os.name != 'nt' or windll is None:
+        return []
     snap = windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snap in (ctypes.c_void_p(-1).value, -1):
+    if snap in (INVALID_HANDLE, -1, 0, None):
         return []
     pe = PROCESSENTRY32(); pe.dwSize = sizeof(PROCESSENTRY32); pids = []
-    if windll.kernel32.Process32First(snap, byref(pe)):
-        while True:
-            if pe.szExeFile.decode('utf-8', 'replace').lower() == 'qq.exe':
-                pids.append(pe.th32ProcessID)
-            if not windll.kernel32.Process32Next(snap, byref(pe)):
-                break
-    windll.kernel32.CloseHandle(snap)
+    try:
+        if windll.kernel32.Process32First(snap, byref(pe)):
+            while True:
+                if pe.szExeFile.decode('utf-8', 'replace').lower() == 'qq.exe':
+                    pids.append(pe.th32ProcessID)
+                if not windll.kernel32.Process32Next(snap, byref(pe)):
+                    break
+    finally:
+        windll.kernel32.CloseHandle(snap)
     return pids
 
 
 def pid_has_module(pid, name):
+    if os.name != 'nt' or windll is None:
+        return False
     snap = windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
-    if snap in (ctypes.c_void_p(-1).value, -1, 0):
+    if snap in (INVALID_HANDLE, -1, 0, None):
         return False
     me = MODULEENTRY32(); me.dwSize = sizeof(MODULEENTRY32); found = False
-    if windll.kernel32.Module32First(snap, byref(me)):
-        while True:
-            if me.szModule.decode('utf-8', 'replace').lower() == name.lower():
-                found = True; break
-            if not windll.kernel32.Module32Next(snap, byref(me)):
-                break
-    windll.kernel32.CloseHandle(snap)
+    try:
+        if windll.kernel32.Module32First(snap, byref(me)):
+            while True:
+                if me.szModule.decode('utf-8', 'replace').lower() == name.lower():
+                    found = True; break
+                if not windll.kernel32.Module32Next(snap, byref(me)):
+                    break
+    finally:
+        windll.kernel32.CloseHandle(snap)
     return found
 
 
@@ -94,6 +128,8 @@ def find_qq_main_pid():
 
 
 def read_mem(handle, addr, size):
+    if os.name != 'nt' or windll is None:
+        return None
     buf = create_string_buffer(size); n = ctypes.c_size_t(0)
     if windll.kernel32.ReadProcessMemory(handle, ctypes.c_void_p(addr), buf, size, byref(n)):
         return buf.raw[:n.value]
@@ -101,15 +137,16 @@ def read_mem(handle, addr, size):
 
 
 def db_dir(qq):
-    """nt_db 目录。QQ 数据目录装 QQ 时可能被改到别的盘，所以读 config.json 的
-    qq_data_dir；配置里的 account 优先，为空时回退命令行的 --qq。"""
-    try:
-        cfg_acc = str(load_config().get('account') or '').strip()
-        if cfg_acc and cfg_acc != 'YOUR_QQ':
-            qq = cfg_acc
-    except Exception:
-        pass
-    return qq_path(str(qq), 'nt_qq', 'nt_db')
+    """nt_db 目录。优先使用显式传入的 qq；为空/占位符时回退 config.json 的 account。"""
+    acc = str(qq or '').strip()
+    if not acc or acc == 'YOUR_QQ':
+        try:
+            cfg_acc = str(load_config().get('account') or '').strip()
+            if cfg_acc and cfg_acc != 'YOUR_QQ':
+                acc = cfg_acc
+        except Exception:
+            pass
+    return qq_path(acc, 'nt_qq', 'nt_db')
 
 
 def collect_db_info(d):
@@ -157,7 +194,12 @@ def scan_rkeys(limit=400):
     """
     import re as _re
     from collections import Counter as _Counter
+    if os.name != 'nt' or windll is None:
+        return []
     pid = find_qq_main_pid()
+    if not pid:
+        print('  [rkey] 未找到运行中的 QQ 进程')
+        return []
     handle = windll.kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
         print('  [rkey] OpenProcess 失败 err=%d' % ctypes.GetLastError())
@@ -226,6 +268,8 @@ def scan_by_salt(handle, salt_hexes):
                                 results[sh] = data[idx - 64:idx].decode('ascii').lower()
                                 break
                         off = idx + 1
+                if len(results) >= len(needles):
+                    break
         nxt = base + size
         if nxt <= addr or nxt >= 0x7FFFFFFFFFFF:
             break
@@ -288,9 +332,7 @@ def extract_keys(qq, pid=0, output=None, use_dpapi=True):
            'dpapi_protected': bool(use_dpapi and os.name == 'nt'),
            'key_map': key_map, 'salt_files': {sh: [x[0] for x in pa_map[sh]] for sh in key_map}}
     if output:
-        os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
-        with open(output, 'w', encoding='utf-8') as f:
-            json.dump(out, f, indent=2, ensure_ascii=False)
+        atomic_write_json(output, out, indent=2)
         log('written: %s (dpapi=%s)' % (output, out['dpapi_protected']))
     print('@@PROGRESS|{"stage":"key","pct":100,"detail":"%d 个密钥"}' % len(key_map), flush=True)
 
