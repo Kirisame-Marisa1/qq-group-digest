@@ -1624,13 +1624,14 @@ mark.hl {
   const rawJson = document.getElementById('digest-data').textContent;
   const DATA = JSON.parse(rawJson);
 
+  const VALID_VIEWS = ['claude', 'links', 'actions', 'social', 'wrapped', 'monet', 'bento', 'paper', 'markdown'];
   const urlParamView = (new URLSearchParams(window.location.search).get('view') || window.location.hash.replace('#', ''));
   let savedView = null;
   try { savedView = localStorage.getItem('ntqq_preferred_view'); } catch (e) {}
   let defaultView = 'claude';
-  if (['claude', 'monet', 'bento', 'paper', 'markdown'].includes(urlParamView)) {
+  if (VALID_VIEWS.includes(urlParamView)) {
     defaultView = urlParamView;
-  } else if (savedView && ['claude', 'monet', 'bento', 'paper', 'markdown'].includes(savedView)) {
+  } else if (savedView && VALID_VIEWS.includes(savedView)) {
     defaultView = savedView;
   }
 
@@ -1675,6 +1676,11 @@ mark.hl {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function safeUrl(u) {
+    const s = String(u || '').trim();
+    return /^https?:\/\//i.test(s) ? s : '#';
   }
 
   function highlightText(str, q) {
@@ -1797,8 +1803,14 @@ mark.hl {
     const md = DATA.markdown || '';
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(md).then(() => {
-        const b = document.getElementById('copy-md-btn');
-        if (b) { b.textContent = '✅ 已复制到剪贴板'; setTimeout(() => { b.textContent = '📋 复制全部 Markdown'; }, 2000); }
+        ['copy-md-btn', 'claude-copy-btn'].forEach(id => {
+          const b = document.getElementById(id);
+          if (b) {
+            const old = b.textContent;
+            b.textContent = '✅ 已复制到剪贴板';
+            setTimeout(() => { b.textContent = old; }, 2000);
+          }
+        });
       });
     }
   };
@@ -1806,12 +1818,14 @@ mark.hl {
   function renderHeader() {
     const m = DATA.meta || {};
     document.getElementById('hdr-title').textContent = m.title || 'QQ 群聊可视化简报';
+    const cutoffVal = m.cutoff_str || m.cutoff_text || '';
+    const windowVal = m.window_str || m.window_text || '';
     const subParts = [];
-    if (m.cutoff_str) {
-      subParts.push('<span class="status-dot"></span><span>数据截止 <strong>' + esc(m.cutoff_str) + '</strong></span>');
+    if (cutoffVal) {
+      subParts.push('<span class="status-dot"></span><span>数据截止 <strong>' + esc(cutoffVal) + '</strong></span>');
     }
-    if (m.window_str) {
-      subParts.push('<span>｜窗口 ' + esc(m.window_str) + '</span>');
+    if (windowVal) {
+      subParts.push('<span>｜窗口 ' + esc(windowVal) + '</span>');
     }
     if (m.src_mode) {
       subParts.push('<span class="pill pill-slate">' + esc(m.src_mode) + '</span>');
@@ -1907,7 +1921,7 @@ mark.hl {
         const deltaCls = g.delta > 0 ? 'pill-emerald' : (g.delta < 0 ? 'pill-rose' : 'pill-slate');
         const topKws = (g.keywords || []).slice(0, 5).map(k => '<span class="pill pill-slate">' + highlightText(k.word, q) + ' (' + k.count + ')</span>').join(' ');
         const topThread = (g.threads && g.threads[0]) ? g.threads[0] : null;
-        leftHtml += '<div class="grp-overview-card" onclick="selectGroup(\'' + esc(g.code) + '\')">' +
+        leftHtml += '<div class="grp-overview-card" data-action="select-group" data-code="' + esc(g.code) + '">' +
           '<div>' +
             '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">' +
               '<div style="font-weight:700;font-size:15px;display:flex;align-items:center;gap:6px;min-width:0">' +
@@ -1952,7 +1966,7 @@ mark.hl {
         '<div style="display:flex;flex-direction:column;gap:4px">';
       kpis.global_speakers.forEach((s, idx) => {
         const w = Math.max(4, Math.round((s.count / mxSpk) * 100));
-        rightHtml += '<div class="speaker-row" onclick="filterByKeyword(\'' + esc(s.name) + '\')">' +
+        rightHtml += '<div class="speaker-row" data-action="filter-keyword" data-word="' + esc(s.name) + '">' +
           '<div class="avatar" style="background:' + hashColor(s.name) + ';width:28px;height:28px;font-size:12px">' + esc(avatarChar(s.name)) + '</div>' +
           '<div class="speaker-info">' +
             '<div class="speaker-top">' +
@@ -1973,7 +1987,7 @@ mark.hl {
         '<div style="display:flex;flex-wrap:wrap;gap:6px">';
       kpis.global_keywords.forEach((k, idx) => {
         const cls = idx < 4 ? 'pill-amber' : (idx < 10 ? 'pill-accent' : 'pill-slate');
-        rightHtml += '<button class="pill ' + cls + '" style="cursor:pointer;padding:4px 10px;font-size:12px" onclick="filterByKeyword(\'' + esc(k.word) + '\')">' +
+        rightHtml += '<button class="pill ' + cls + '" style="cursor:pointer;padding:4px 10px;font-size:12px" data-action="filter-keyword" data-word="' + esc(k.word) + '">' +
           esc(k.word) + ' <span style="opacity:0.75">×' + k.count + '</span>' +
         '</button>';
       });
@@ -2020,7 +2034,7 @@ mark.hl {
             '<button class="icon-btn" style="font-size:12px;padding:4px 10px" onclick="toggleAllThreads(false)">全部收起</button>' +
           '</div>'
         ) : (
-          spkFilter ? '<button class="pill pill-accent" style="cursor:pointer;padding:5px 10px" onclick="filterBySpeaker(\'' + esc(spkFilter) + '\')">正在筛选发言人: ' + esc(spkFilter) + ' ✕</button>' : ''
+          spkFilter ? '<button class="pill pill-accent" style="cursor:pointer;padding:5px 10px" data-action="filter-speaker" data-name="' + esc(spkFilter) + '">正在筛选发言人: ' + esc(spkFilter) + ' ✕</button>' : ''
         )) +
       '</div>' +
     '</div>';
@@ -2038,9 +2052,9 @@ mark.hl {
         threads.forEach(t => {
           const tid = grp.code + '-' + t.idx;
           const isOpen = !!state.expandedThreads[tid] || !!qLow;
-          const kwBadges = (t.keywords || []).map(k => '<span class="pill pill-accent" style="cursor:pointer" onclick="filterByKeyword(\'' + esc(k) + '\')">#' + highlightText(k, q) + '</span>').join(' ');
+          const kwBadges = (t.keywords || []).map(k => '<span class="pill pill-accent" style="cursor:pointer" data-action="filter-keyword" data-word="' + esc(k) + '">#' + highlightText(k, q) + '</span>').join(' ');
           const pplBadges = (t.top_people || []).map(p =>
-            '<span class="pill pill-slate" style="cursor:pointer" onclick="filterBySpeaker(\'' + esc(p.name) + '\')">' +
+            '<span class="pill pill-slate" style="cursor:pointer" data-action="filter-speaker" data-name="' + esc(p.name) + '">' +
               esc(p.name) + '(' + p.count + ')' +
             '</span>'
           ).join(' ');
@@ -2060,7 +2074,7 @@ mark.hl {
               ).join('') +
             '</div>' +
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:8px">' +
-              '<button class="icon-btn" id="btn-' + esc(tid) + '" data-cnt="' + (t.bubbles || []).length + '" style="font-size:12px;padding:5px 12px" onclick="toggleThread(\'' + esc(tid) + '\')">' +
+              '<button class="icon-btn" id="btn-' + esc(tid) + '" data-cnt="' + (t.bubbles || []).length + '" style="font-size:12px;padding:5px 12px" data-action="toggle-thread" data-tid="' + esc(tid) + '">' +
                 (isOpen ? '🔼 收起对话气泡' : ('💬 展开对话气泡 (' + (t.bubbles || []).length + ' 条)')) +
               '</button>' +
               (t.more_count > 0 ? '<span style="font-size:12px;color:var(--text-muted)">另有 ' + t.more_count + ' 条见完整对话流</span>' : '') +
@@ -2120,7 +2134,7 @@ mark.hl {
       grp.speakers.forEach((s, idx) => {
         const w = Math.max(4, Math.round((s.count / mx) * 100));
         const isSel = state.speakerFilter === s.name;
-        rightHtml += '<div class="speaker-row" style="' + (isSel ? 'background:var(--accent-soft);border:1px solid var(--accent)' : '') + '" onclick="filterBySpeaker(\'' + esc(s.name) + '\')">' +
+        rightHtml += '<div class="speaker-row" style="' + (isSel ? 'background:var(--accent-soft);border:1px solid var(--accent)' : '') + '" data-action="filter-speaker" data-name="' + esc(s.name) + '">' +
           '<div class="avatar" style="background:' + hashColor(s.name) + ';width:28px;height:28px;font-size:12px">' + esc(avatarChar(s.name)) + '</div>' +
           '<div class="speaker-info">' +
             '<div class="speaker-top">' +
@@ -2142,7 +2156,7 @@ mark.hl {
           '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">';
         grp.keywords.forEach((k, idx) => {
           const cls = idx < 3 ? 'pill-amber' : (idx < 8 ? 'pill-accent' : 'pill-slate');
-          rightHtml += '<button class="pill ' + cls + '" style="cursor:pointer;padding:4px 10px;font-size:12px" onclick="filterByKeyword(\'' + esc(k.word) + '\')">' +
+          rightHtml += '<button class="pill ' + cls + '" style="cursor:pointer;padding:4px 10px;font-size:12px" data-action="filter-keyword" data-word="' + esc(k.word) + '">' +
             esc(k.word) + ' ×' + k.count +
           '</button>';
         });
@@ -2259,7 +2273,7 @@ mark.hl {
           const c = t.includes('@全体') ? 'pill-rose' : (t.includes('班群') ? 'pill-amber' : 'pill-accent');
           return '<span class="pill ' + c + '">' + esc(t) + '</span>';
         }).join(' ');
-        html += '<div class="radar-item" onclick="selectGroup(\'' + esc(it.group_code) + '\')">' +
+        html += '<div class="radar-item" data-action="select-group" data-code="' + esc(it.group_code) + '">' +
           '<div class="radar-meta">' +
             '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">' +
               tagPills +
@@ -2286,7 +2300,7 @@ mark.hl {
         '</button>';
     groups.forEach(g => {
       const act = state.activeGroup === g.code ? ' active' : '';
-      html += '<button class="group-tab' + act + '" onclick="selectGroup(\'' + esc(g.code) + '\')">' +
+      html += '<button class="group-tab' + act + '" data-action="select-group" data-code="' + esc(g.code) + '">' +
         (g.is_class ? '🎓 ' : '') + esc(g.name) +
         ' <span class="tab-cnt">' + g.nconv + '</span>' +
       '</button>';
@@ -2308,7 +2322,7 @@ mark.hl {
       return '<div class="paper-view">' +
         '<div class="paper-masthead">' +
           '<div class="paper-title">' + esc(m.title || 'QQ 群聊日报') + '</div>' +
-          '<div class="paper-meta-strip"><span>' + esc(m.window_str || '') + '</span><span>数据截止：' + esc(m.cutoff_str || '') + '</span></div>' +
+          '<div class="paper-meta-strip"><span>' + esc(m.window_str || m.window_text || '') + '</span><span>数据截止：' + esc(m.cutoff_str || m.cutoff_text || '') + '</span></div>' +
         '</div>' +
         '<div class="md-box" style="background:transparent;border:none;max-height:none;font-family:inherit;font-size:15px">' + esc(DATA.markdown || '') + '</div>' +
       '</div>';
@@ -2319,9 +2333,9 @@ mark.hl {
         '<div style="font-size:12px;letter-spacing:0.2em;text-transform:uppercase;color:var(--text-sub);margin-bottom:4px">LOCAL INTELLIGENCE EDITION · ZERO-UPLOAD DIGEST</div>' +
         '<div class="paper-title">QQ 群聊每日观察报</div>' +
         '<div class="paper-meta-strip">' +
-          '<span>📅 统计窗口：' + esc(m.window_str || '-') + '</span>' +
+          '<span>📅 统计窗口：' + esc(m.window_str || m.window_text || '-') + '</span>' +
           '<span>📊 总消息 ' + (k.total_msgs || 0) + ' 条（有效对话 ' + (k.total_conv || 0) + ' 条 / ' + (k.group_count || 0) + ' 个群）</span>' +
-          '<span>⏱️ 数据截止：' + esc(m.cutoff_str || '-') + '</span>' +
+          '<span>⏱️ 数据截止：' + esc(m.cutoff_str || m.cutoff_text || '-') + '</span>' +
         '</div>' +
       '</div>';
 
@@ -2373,7 +2387,7 @@ mark.hl {
         '<button class="icon-btn" id="copy-md-btn" onclick="copyMarkdown()">📋 复制全部 Markdown</button>' +
       '</div>' +
       '<div style="font-size:13px;color:var(--text-sub);margin-bottom:14px">' +
-        '查询窗口：<strong>' + esc(m.window_str || '-') + '</strong> ｜ 数据截止：<strong>' + esc(m.cutoff_str || '-') + '</strong>' +
+        '查询窗口：<strong>' + esc(m.window_str || m.window_text || '-') + '</strong> ｜ 数据截止：<strong>' + esc(m.cutoff_str || m.cutoff_text || '-') + '</strong>' +
       '</div>';
 
     if (ex.summary_cards && ex.summary_cards.length) {
@@ -2551,7 +2565,7 @@ mark.hl {
         if (!matchName && !matchKws && !matchThreads && !matchQuotes) return;
       }
       const act = state.claudeActiveGroup === g.code ? ' active' : '';
-      html += '<button class="claude-group-item' + act + '" onclick="selectClaudeGroup(\'' + esc(g.code) + '\')">' +
+      html += '<button class="claude-group-item' + act + '" data-action="select-claude-group" data-code="' + esc(g.code) + '">' +
         '<span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">' +
           '<span>' + (g.is_class ? '🎓' : '💬') + '</span>' +
           '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(g.name) + '</span>' +
@@ -2615,7 +2629,7 @@ mark.hl {
         '</div>' +
         '<div class="claude-article-body">' +
           '<div class="claude-lead-note">' +
-            '💬 本专项分析由私有分析引擎实时提炼。窗口范围：<strong>' + esc(m.window_str || '-') + '</strong> ｜ 数据截止：<strong>' + esc(m.cutoff_str || '-') + '</strong>' +
+            '💬 本专项分析由私有分析引擎实时提炼。窗口范围：<strong>' + esc(m.window_str || m.window_text || '-') + '</strong> ｜ 数据截止：<strong>' + esc(m.cutoff_str || m.cutoff_text || '-') + '</strong>' +
           '</div>';
 
       if (ex.summary_cards && ex.summary_cards.length) {
@@ -2696,7 +2710,7 @@ mark.hl {
         html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 头版雷达 · 重点通知与高优发言 (' + focus.length + ' 条)</div>' +
           '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:28px">';
         focus.slice(0, 8).forEach(it => {
-          html += '<div class="claude-thread-card" style="cursor:pointer" onclick="selectClaudeGroup(\'' + esc(it.group_code) + '\')">' +
+          html += '<div class="claude-thread-card" style="cursor:pointer" data-action="select-claude-group" data-code="' + esc(it.group_code) + '">' +
             '<div class="claude-thread-header">' +
               '<span style="font-weight:600;font-size:13px;color:var(--claude-terracotta)">[' + esc(it.group_name) + ']</span>' +
               '<span style="font-size:11.5px;color:var(--claude-text-sub)">' + esc(it.sender) + ' · ' + esc(it.time) + '</span>' +
@@ -2731,7 +2745,7 @@ mark.hl {
             '</div>' +
           '</div>' +
           '<div style="padding:10px 18px;background:var(--claude-surface-warm);border-top:1px solid var(--claude-border-subtle);display:flex;justify-content:flex-end">' +
-            '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(g.code) + '\')">进入深度阅读 →</button>' +
+            '<button class="claude-tool-btn" data-action="select-claude-group" data-code="' + esc(g.code) + '">进入深度阅读 →</button>' +
           '</div>' +
         '</div>';
       });
@@ -2782,8 +2796,8 @@ mark.hl {
           '<span class="pill pill-slate" style="font-family:var(--claude-mono)">有效对话 ' + curGroup.nconv + ' 条 ｜ 参与 ' + curGroup.people_count + ' 人</span>' +
         '</div>' +
         '<div class="claude-artifact-tools">' +
-          '<button class="claude-tool-btn" id="claude-copy-btn" onclick="copyClaudeGroupMarkdown(\'' + esc(curGroup.code) + '\')">📋 复制本群 Markdown</button>' +
-          '<button class="claude-tool-btn" onclick="switchView(\'bento\'); selectGroup(\'' + esc(curGroup.code) + '\')">🍱 Bento 看板</button>' +
+          '<button class="claude-tool-btn" id="claude-copy-btn" data-action="copy-claude-md" data-code="' + esc(curGroup.code) + '">📋 复制本群 Markdown</button>' +
+          '<button class="claude-tool-btn" data-action="switch-bento-group" data-code="' + esc(curGroup.code) + '">🍱 Bento 看板</button>' +
           '<button class="claude-tool-btn" onclick="window.print()">🖨️ 打印</button>' +
         '</div>' +
       '</div>' +
@@ -2819,8 +2833,9 @@ mark.hl {
       html += '<div class="claude-chapter-title"><span class="claude-chapter-diamond">◈</span> 话题脉络深度拆解 (' + threads.length + ' 个讨论阶段)</div>';
       threads.forEach(t => {
         const tid = curGroup.code + '-' + t.idx;
+        const safeTid = esc(tid);
         const isOpen = !!state.claudeExpandedThreads[tid];
-        html += '<div class="claude-thread-card" id="claude-topic-' + tid + '">' +
+        html += '<div class="claude-thread-card" id="claude-topic-' + safeTid + '">' +
           '<div class="claude-thread-header">' +
             '<div class="claude-thread-title">◈ [' + esc(t.start_time) + ' ~ ' + esc(t.end_time) + '] ' + esc(t.title) + '</div>' +
             '<div class="claude-thread-meta">' +
@@ -2841,11 +2856,11 @@ mark.hl {
 
         if (t.bubbles && t.bubbles.length) {
           html += '<div style="margin-top:14px;display:flex;justify-content:flex-end">' +
-            '<button class="claude-tool-btn" id="claude-btn-' + tid + '" data-cnt="' + t.bubbles.length + '" onclick="toggleClaudeThread(\'' + tid + '\')">' +
+            '<button class="claude-tool-btn" id="claude-btn-' + safeTid + '" data-cnt="' + t.bubbles.length + '" data-action="toggle-claude-thread" data-tid="' + safeTid + '">' +
               (isOpen ? '🔼 收起全部消息' : ('💬 展开全部消息 (' + t.bubbles.length + ' 条)')) +
             '</button>' +
           '</div>' +
-          '<div id="claude-drawer-' + tid + '" style="display:' + (isOpen ? 'flex' : 'none') + ';flex-direction:column;gap:8px;margin-top:12px;border-top:1px solid var(--claude-border-subtle);padding-top:12px">';
+          '<div id="claude-drawer-' + safeTid + '" style="display:' + (isOpen ? 'flex' : 'none') + ';flex-direction:column;gap:8px;margin-top:12px;border-top:1px solid var(--claude-border-subtle);padding-top:12px">';
           t.bubbles.forEach(b => {
             html += renderClaudeTurn(b, q);
           });
@@ -2886,9 +2901,9 @@ mark.hl {
     }
 
     html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:20px;border-top:1px solid var(--claude-border);margin-top:20px;flex-wrap:wrap">' +
-      (prevGroup ? '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(prevGroup.code) + '\')">← 上一个群：' + esc(prevGroup.name) + '</button>' : '<div></div>') +
+      (prevGroup ? '<button class="claude-tool-btn" data-action="select-claude-group" data-code="' + esc(prevGroup.code) + '">← 上一个群：' + esc(prevGroup.name) + '</button>' : '<div></div>') +
       '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'__ALL__\')">🌐 返回全群总览</button>' +
-      (nextGroup ? '<button class="claude-tool-btn" onclick="selectClaudeGroup(\'' + esc(nextGroup.code) + '\')">下一个群：' + esc(nextGroup.name) + ' →</button>' : '<div></div>') +
+      (nextGroup ? '<button class="claude-tool-btn" data-action="select-claude-group" data-code="' + esc(nextGroup.code) + '">下一个群：' + esc(nextGroup.name) + ' →</button>' : '<div></div>') +
     '</div>';
 
     html += '</div></div>';
@@ -2951,7 +2966,7 @@ mark.hl {
       t.className = 'monet-toast';
       document.body.appendChild(t);
     }
-    t.innerHTML = msg;
+    t.textContent = msg;
     t.classList.add('show');
     clearTimeout(window._monetToastTimer);
     window._monetToastTimer = setTimeout(() => {
@@ -2982,8 +2997,8 @@ mark.hl {
             '<div class="monet-masthead-title">' + esc(m.title || '莫奈纸雕 · 卷宗检索信札') + '</div>' +
             '<div class="monet-masthead-sub">« L’art de converser au fil des mots, comme des reflets sur l’eau »</div>' +
             '<div class="monet-ledger-strip">' +
-              '<span>📅 纪事周期：' + esc(m.window_str || '-') + '</span>' +
-              '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || '-') + '</span>' +
+              '<span>📅 纪事周期：' + esc(m.window_str || m.window_text || '-') + '</span>' +
+              '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || m.cutoff_text || '-') + '</span>' +
               '<span class="monet-seal-badge">🌸 CACHET DE CIRE</span>' +
             '</div>' +
           '</div>' +
@@ -3020,8 +3035,8 @@ mark.hl {
           '<div class="monet-masthead-title">莫奈纸雕 · 字里行间</div>' +
           '<div class="monet-masthead-sub">« L’art de converser au fil des mots, comme des reflets sur l’eau »</div>' +
           '<div class="monet-ledger-strip">' +
-            '<span>📅 纪事周期：' + esc(m.window_str || '-') + '</span>' +
-            '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || '-') + '</span>' +
+            '<span>📅 纪事周期：' + esc(m.window_str || m.window_text || '-') + '</span>' +
+            '<span>⏱️ 结卷时刻：' + esc(m.cutoff_str || m.cutoff_text || '-') + '</span>' +
             '<span>📜 卷宗收录：' + (k.total_msgs || 0) + ' 条（有效交谈 ' + (k.total_conv || 0) + ' 条 / ' + (k.group_count || 0) + ' 个群室）</span>' +
             '<span class="monet-seal-badge">🌸 CACHET DE GIVERNY</span>' +
           '</div>' +
@@ -3049,7 +3064,7 @@ mark.hl {
       '</button>';
     groups.forEach(g => {
       const act = state.monetActiveGroup === g.code ? ' monet-btn-lotus' : '';
-      html += '<button class="monet-btn' + act + '" style="border-radius:20px;font-size:11.5px;white-space:nowrap" onclick="selectMonetGroup(\'' + esc(g.code) + '\')">' +
+      html += '<button class="monet-btn' + act + '" style="border-radius:20px;font-size:11.5px;white-space:nowrap" data-action="select-monet-group" data-code="' + esc(g.code) + '">' +
         (g.is_class ? '🎓 ' : '💬 ') + esc(g.name) +
       '</button>';
     });
@@ -3107,11 +3122,12 @@ mark.hl {
       const topSpk = (g.speakers || []).slice(0, 6).map(s => esc(s.name) + '(' + s.count + ')').join(' · ');
       const topKws = (g.keywords || []).slice(0, 8).map(kw => '<span style="background:var(--monet-silver-light);border:1px solid var(--monet-silver);padding:2px 7px;border-radius:10px;font-size:11px;margin-right:4px">' + esc(kw.word) + '</span>').join('');
 
+      const lettreNo = g.idx || (gIdx + 1);
       html += '<article class="monet-lettre-card" id="monet-letter-' + esc(g.code) + '">' +
         '<div class="monet-washi-tape' + (gIdx % 2 === 1 ? ' silver' : '') + '"></div>' +
         '<div class="monet-lettre-hdr">' +
           '<div>' +
-            '<div class="monet-lettre-num">LETTRE N° ' + (g.idx < 10 ? '0' + g.idx : g.idx) + ' / GIVERNY · ' + (g.is_class ? 'SALON SCOLAIRE' : 'SALON CONVIVIAL') + '</div>' +
+            '<div class="monet-lettre-num">LETTRE N° ' + (lettreNo < 10 ? '0' + lettreNo : lettreNo) + ' / GIVERNY · ' + (g.is_class ? 'SALON SCOLAIRE' : 'SALON CONVIVIAL') + '</div>' +
             '<div class="monet-lettre-title">' + (g.is_class ? '🎓 ' : '💬 ') + esc(g.name) + '</div>' +
           '</div>' +
           '<div style="text-align:right">' +
@@ -3144,7 +3160,7 @@ mark.hl {
         });
 
         if (t.bubbles && t.bubbles.length) {
-          html += '<button class="monet-drawer-toggle" onclick="toggleMonetThread(\'' + tid + '\')">' +
+          html += '<button class="monet-drawer-toggle" data-action="toggle-monet-thread" data-tid="' + esc(tid) + '">' +
             (isExp ? '▲ 收起信札原件 (' + t.bubbles.length + '条)' : '▼ 展开信札原件 (' + t.bubbles.length + '条)') +
           '</button>';
           if (isExp) {
@@ -3275,37 +3291,41 @@ mark.hl {
       '<div id="links-cat-btns" style="display:flex;gap:6px;flex-wrap:wrap">' +
         '<button class="icon-btn active-filter" onclick="filterLinksCategory(\'all\', this)">全部 (' + count + ')</button>' +
         '<button class="icon-btn" onclick="filterLinksCategory(\'code\', this)">🛠️ 代码与技术</button>' +
-        '<button class="icon-btn" onclick="filterLinksCategory(\'cloud\', this)">💾 网盘下载</button>' +
-        '<button class="icon-btn" onclick="filterLinksCategory(\'media\', this)">🎬 影音娱乐</button>' +
-        '<button class="icon-btn" onclick="filterLinksCategory(\'news\', this)">📰 资讯社媒</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'drive\', this)">💾 网盘下载</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'video\', this)">🎬 影音娱乐</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'article\', this)">📰 资讯社媒</button>' +
+        '<button class="icon-btn" onclick="filterLinksCategory(\'doc\', this)">📄 在线文档</button>' +
         '<button class="icon-btn" onclick="filterLinksCategory(\'other\', this)">🌐 其它网页</button>' +
       '</div>' +
     '</div>';
 
     html += '<div id="links-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:14px">';
     links.forEach(l => {
+      const catNorm = ({'cloud': 'drive', 'media': 'video', 'news': 'article'})[l.category] || l.category || 'other';
       const catBadge = {
         'code': '<span class="pill pill-cyan">🛠️ 代码与技术</span>',
-        'cloud': '<span class="pill pill-emerald">💾 网盘文件</span>',
-        'media': '<span class="pill pill-purple">🎬 影音娱乐</span>',
-        'news': '<span class="pill pill-amber">📰 资讯社交</span>',
+        'drive': '<span class="pill pill-emerald">💾 网盘文件</span>',
+        'video': '<span class="pill pill-purple">🎬 影音娱乐</span>',
+        'article': '<span class="pill pill-amber">📰 资讯社交</span>',
         'doc': '<span class="pill pill-blue">📄 文档资料</span>',
-      }[l.category] || '<span class="pill pill-slate">🌐 其它</span>';
+      }[catNorm] || '<span class="pill pill-slate">🌐 其它</span>';
 
       const senders = (l.senders || []).join(', ') || '群友';
-      const cleanUrl = esc(l.clean_url || l.raw_url || '');
+      const rawCleanUrl = l.clean_url || l.raw_url || '';
+      const cleanUrl = esc(rawCleanUrl);
+      const safeHref = esc(safeUrl(rawCleanUrl));
       const domain = esc(l.domain || '');
       const context = esc(l.context || (l.contexts && l.contexts[0]) || '');
       const timeStr = esc(l.last_time || '');
       const shareBadge = (l.share_count > 1) ? '<span class="pill pill-rose" style="font-size:11px">分享 ' + l.share_count + ' 次</span>' : '';
 
-      html += '<div class="link-card-item" data-cat="' + esc(l.category || 'other') + '" data-text="' + cleanUrl.toLowerCase() + ' ' + domain.toLowerCase() + ' ' + esc(senders).toLowerCase() + ' ' + context.toLowerCase() + '" ' +
+      html += '<div class="link-card-item" data-cat="' + esc(catNorm) + '" data-text="' + cleanUrl.toLowerCase() + ' ' + domain.toLowerCase() + ' ' + esc(senders).toLowerCase() + ' ' + context.toLowerCase() + '" ' +
         'style="background:var(--bg-elev);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px">' +
         '<div style="display:flex;justify-content:space-between;align-items:center">' +
           catBadge + shareBadge +
           '<span style="font-size:11.5px;color:var(--text-muted)">' + timeStr + '</span>' +
         '</div>' +
-        '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" style="font-size:13px;color:var(--accent);font-weight:600;word-break:break-all;text-decoration:none;line-height:1.4">' +
+        '<a href="' + safeHref + '" target="_blank" rel="noopener noreferrer" style="font-size:13px;color:var(--accent);font-weight:600;word-break:break-all;text-decoration:none;line-height:1.4">' +
           cleanUrl +
         '</a>' +
         '<div style="font-size:11.5px;color:var(--text-sub);display:flex;align-items:center;gap:6px">' +
@@ -3313,8 +3333,8 @@ mark.hl {
         '</div>' +
         (context ? '<div style="font-size:12px;color:var(--text-muted);background:var(--card);padding:6px 10px;border-radius:6px;font-style:italic">“' + context + '”</div>' : '') +
         '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:auto">' +
-          '<button class="icon-btn" style="padding:3px 10px;font-size:11.5px" onclick="copyText(\'' + cleanUrl + '\', this)">📋 复制链接</button>' +
-          '<a href="' + cleanUrl + '" target="_blank" rel="noopener noreferrer" class="icon-btn" style="padding:3px 10px;font-size:11.5px;text-decoration:none">↗ 打开</a>' +
+          '<button class="icon-btn" style="padding:3px 10px;font-size:11.5px" data-action="copy-text" data-copy="' + cleanUrl + '">📋 复制链接</button>' +
+          '<a href="' + safeHref + '" target="_blank" rel="noopener noreferrer" class="icon-btn" style="padding:3px 10px;font-size:11.5px;text-decoration:none">↗ 打开</a>' +
         '</div>' +
       '</div>';
     });
@@ -3350,7 +3370,7 @@ mark.hl {
           '<span style="font-size:16px">📌</span>' +
           '<div style="flex:1">' +
             '<div style="font-size:13.5px;color:var(--text);font-weight:600">' + esc(d.decision || d.raw_text || '') + '</div>' +
-            '<div style="font-size:11.5px;color:var(--text-sub);margin-top:4px">' + esc(d.sender_name || '群友') + ' · ' + esc(d.time_str || '') + '</div>' +
+            '<div style="font-size:11.5px;color:var(--text-sub);margin-top:4px">' + esc(d.announcer || d.sender_name || '群友') + ' · ' + esc(d.time_str || '') + '</div>' +
           '</div>' +
         '</div>';
       });
@@ -3468,7 +3488,7 @@ mark.hl {
       const angle = (2 * Math.PI * idx) / N - Math.PI / 2;
       const x = cx + R * Math.cos(angle);
       const y = cy + R * Math.sin(angle);
-      const nid = n.id || n.name || String(idx);
+      const nid = n.id || n.label || n.name || String(idx);
       nodeMap[nid] = { ...n, x, y, angle };
     });
 
@@ -3486,18 +3506,21 @@ mark.hl {
     });
 
     displayNodes.forEach(n => {
-      const nid = n.id || n.name;
+      const nid = n.id || n.label || n.name;
       const pos = nodeMap[nid];
       if (!pos) return;
-      const color = hashColor(n.name || nid);
-      const radius = Math.min(12 + (n.weight || 1) * 0.35, 22);
-      svg += '<g class="social-node-group" style="cursor:pointer" title="' + esc(n.name || nid) + ' (' + (n.weight || 0) + '条消息)">' +
+      const dispName = n.label || n.name || nid;
+      const msgCount = n.message_count != null ? n.message_count : (n.weight || 0);
+      const color = hashColor(dispName);
+      const radius = Math.min(12 + Math.max(1, msgCount) * 0.35, 22);
+      svg += '<g class="social-node-group" style="cursor:pointer">' +
+        '<title>' + esc(dispName) + ' (' + msgCount + '条消息 / 互动度 ' + (n.total_degree || 0) + ')</title>' +
         '<circle cx="' + pos.x + '" cy="' + pos.y + '" r="' + radius + '" fill="' + color + '" stroke="var(--bg-elev)" stroke-width="2.5" />' +
         '<text x="' + pos.x + '" y="' + (pos.y + 4) + '" fill="#ffffff" font-size="11" font-weight="700" text-anchor="middle" pointer-events="none">' +
-          esc((n.name || nid).substring(0, 2)) +
+          esc(String(dispName).substring(0, 2)) +
         '</text>' +
         '<text x="' + pos.x + '" y="' + (pos.y + radius + 14) + '" fill="var(--text)" font-size="11" font-weight="600" text-anchor="middle" pointer-events="none">' +
-          esc((n.name || nid).substring(0, 6)) +
+          esc(String(dispName).substring(0, 6)) +
         '</text>' +
       '</g>';
     });
@@ -3610,9 +3633,42 @@ mark.hl {
 
   window.openCompanionWrapped = function() {
     const curPath = window.location.href;
-    const wrappedPath = curPath.replace('简报', 'Wrapped');
+    const basePart = curPath.split(/[?#]/)[0];
+    const wrappedPath = basePart.includes('简报')
+      ? basePart.replace('简报', 'Wrapped')
+      : basePart.replace(/\.html?$/i, '_wrapped.html');
     window.open(wrappedPath, '_blank');
   };
+
+  document.addEventListener('click', function(ev) {
+    const target = ev.target && ev.target.closest ? ev.target.closest('[data-action]') : null;
+    if (!target) return;
+    const act = target.getAttribute('data-action');
+    if (act === 'select-group') {
+      window.selectGroup(target.getAttribute('data-code') || '__ALL__');
+    } else if (act === 'filter-keyword') {
+      window.filterByKeyword(target.getAttribute('data-word') || '');
+    } else if (act === 'filter-speaker') {
+      window.filterBySpeaker(target.getAttribute('data-name') || '');
+    } else if (act === 'toggle-thread') {
+      window.toggleThread(target.getAttribute('data-tid') || '');
+    } else if (act === 'select-claude-group') {
+      window.selectClaudeGroup(target.getAttribute('data-code') || '__ALL__');
+    } else if (act === 'toggle-claude-thread') {
+      window.toggleClaudeThread(target.getAttribute('data-tid') || '');
+    } else if (act === 'copy-claude-md') {
+      window.copyClaudeGroupMarkdown(target.getAttribute('data-code') || '__ALL__');
+    } else if (act === 'switch-bento-group') {
+      window.switchView('bento');
+      window.selectGroup(target.getAttribute('data-code') || '__ALL__');
+    } else if (act === 'select-monet-group') {
+      window.selectMonetGroup(target.getAttribute('data-code') || '__ALL__');
+    } else if (act === 'toggle-monet-thread') {
+      window.toggleMonetThread(target.getAttribute('data-tid') || '');
+    } else if (act === 'copy-text') {
+      window.copyText(target.getAttribute('data-copy') || '', target);
+    }
+  });
 
   function render() {
     renderHeader();

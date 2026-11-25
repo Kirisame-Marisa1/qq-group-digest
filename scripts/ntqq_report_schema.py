@@ -16,6 +16,7 @@
 import os
 import re
 import sys
+import urllib.parse
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +27,11 @@ if _CUR_DIR not in sys.path:
 
 from pydantic import BaseModel, Field
 from ntqq_segmenter import TopicCluster
+
+try:
+    from ntqq_core import row_to_dict, safe_local_dt
+except ImportError:
+    from scripts.ntqq_core import row_to_dict, safe_local_dt
 
 TZ = timezone(timedelta(hours=8))
 
@@ -73,14 +79,14 @@ class StructuredDigestReport(BaseModel):
 
 # 正则匹配各类常见分享链接
 RE_GITHUB = re.compile(r'https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
-RE_DOCS = re.compile(r'https?://(?:docs\.qq\.com|feishu\.cn|yuque\.com|notion\.so)/\S+')
-RE_PAN = re.compile(r'https?://(?:pan\.baidu\.com|aliyundrive\.com|123pan\.com|lanzou\w*\.com)/\S+')
-RE_URL = re.compile(r'https?://[^\s<>"\'{}|\\^`]+')
+RE_DOCS = re.compile(r'https?://(?:docs\.qq\.com|feishu\.cn|yuque\.com|notion\.so)/[^\s<>"\'，。！？；）】]+')
+RE_PAN = re.compile(r'https?://(?:pan\.baidu\.com|aliyundrive\.com|123pan\.com|lanzou\w*\.com)/[^\s<>"\'，。！？；）】]+')
+_TRIM_URL_PUNCT = ".,!?:;)]}>'\""
 
 
 def _format_msg_anchor(msg: Dict[str, Any]) -> str:
     ts = msg.get("ts", 0)
-    dt = datetime.fromtimestamp(ts, TZ) if ts else datetime.now(TZ)
+    dt = safe_local_dt(ts) or datetime.now(TZ)
     time_str = dt.strftime("%H:%M")
     who = msg.get("sender_name", "") or f"QQ{msg.get('sender_qq', '')}"
     seq = msg.get("seq", 0)
@@ -90,43 +96,41 @@ def _format_msg_anchor(msg: Dict[str, Any]) -> str:
 
 
 def build_structured_report(
-    rows: List[Dict[str, Any]],
+    rows: List[Any],
     clusters: List[TopicCluster],
     group_name: str,
     group_code: int,
     data_cutoff: str = ""
 ) -> StructuredDigestReport:
     """基于清洗与切片后的数据，生成符合 4 大标准化板块的结构化报告对象。"""
+    norm_rows: List[Dict[str, Any]] = [row_to_dict(r) for r in (rows or [])]
     if not data_cutoff:
-        max_ts = max((r.get("ts", 0) for r in rows), default=int(datetime.now().timestamp()))
-        data_cutoff = datetime.fromtimestamp(max_ts, TZ).strftime("%Y-%m-%d %H:%M")
+        max_ts = max((r.get("ts") or 0 for r in norm_rows), default=int(datetime.now().timestamp()))
+        dt_cut = safe_local_dt(max_ts) or datetime.now(TZ)
+        data_cutoff = dt_cut.strftime("%Y-%m-%d %H:%M")
 
     # ── 板块一：今日热点话题 Top N ──────────────────────────────────────
     hot_topics: List[HotTopicItem] = []
-    # 过滤消息数 >= 2 的有效话题簇，按热度（消息数）降序
     valid_clusters = [c for c in clusters if c.message_count >= 2]
     valid_clusters.sort(key=lambda c: -c.message_count)
 
     for c in valid_clusters[:8]:
-        # 提取核心议题与结论
         title = ""
-        conclusion = ""
         msgs = c.messages
 
         for m in msgs:
-            txt = m.get("text", "").replace("\n", " ").strip()
+            txt = (m.get("text") or "").replace("\n", " ").strip()
             if any(k in txt for k in ("通知", "讨论", "问题", "建议", "关于", "总结", "决定")):
                 title = txt[:40]
                 break
         if not title and msgs:
-            title = msgs[0].get("text", "").replace("\n", " ").strip()[:35]
+            title = (msgs[0].get("text") or "").replace("\n", " ").strip()[:35]
 
-        # 结论抽取
         sample_conclusions = []
         for m in msgs[-3:]:
-            st = m.get("text", "").replace("\n", " ").strip()
+            st = (m.get("text") or "").replace("\n", " ").strip()
             if st:
-                sample_conclusions.append(f"{m.get('sender_name', '群友')}: {st[:45]}")
+                sample_conclusions.append(f"{m.get('sender_name') or '群友'}: {st[:45]}")
         conclusion = "；".join(sample_conclusions) if sample_conclusions else "多位成员参与了简短探讨"
 
         hot_topics.append(HotTopicItem(
@@ -141,56 +145,56 @@ def build_structured_report(
     resources: List[ResourceItem] = []
     seen_urls = set()
 
-    for r in rows:
-        t = r.get("text", "")
-        sender = r.get("sender_name", "") or f"QQ{r.get('sender_qq', '')}"
+    for r in norm_rows:
+        t = r.get("text") or ""
+        sender = r.get("sender_name") or f"QQ{r.get('sender_qq', '')}"
         anchor = _format_msg_anchor(r)
 
-        # 检查 GitHub
         for m in RE_GITHUB.findall(t):
-            if m not in seen_urls:
-                seen_urls.add(m)
-                repo_name = m.replace("https://github.com/", "")
+            clean_m = m.rstrip(_TRIM_URL_PUNCT)
+            if clean_m not in seen_urls:
+                seen_urls.add(clean_m)
+                repo_name = urllib.parse.urlparse(clean_m).path.lstrip("/")
                 resources.append(ResourceItem(
                     category="GitHub 仓库",
                     title=f"开源项目: {repo_name}",
-                    url=m,
+                    url=clean_m,
                     sender=sender,
                     ref_anchor=anchor
                 ))
 
-        # 检查在线文档
         for m in RE_DOCS.findall(t):
-            if m not in seen_urls:
-                seen_urls.add(m)
+            clean_m = m.rstrip(_TRIM_URL_PUNCT)
+            if clean_m not in seen_urls:
+                seen_urls.add(clean_m)
                 resources.append(ResourceItem(
                     category="在线文档",
                     title="共享协同文档",
-                    url=m,
+                    url=clean_m,
                     sender=sender,
                     ref_anchor=anchor
                 ))
 
-        # 检查网盘分享
         for m in RE_PAN.findall(t):
-            if m not in seen_urls:
-                seen_urls.add(m)
+            clean_m = m.rstrip(_TRIM_URL_PUNCT)
+            if clean_m not in seen_urls:
+                seen_urls.add(clean_m)
                 resources.append(ResourceItem(
                     category="网盘资源",
                     title="文件下载分享",
-                    url=m,
+                    url=clean_m,
                     sender=sender,
                     ref_anchor=anchor
                 ))
 
-        # 检查分享卡片
         if r.get("kind") == "card" or "[分享卡片:" in t:
             m_card = re.search(r'\[分享卡片:\s*([^\]]+)\](?:\s*\((https?://\S+)\))?', t)
             if m_card:
                 ctitle = m_card.group(1).strip()
-                curl = m_card.group(2) or ""
-                if curl not in seen_urls:
-                    seen_urls.add(curl)
+                curl = (m_card.group(2) or "").rstrip(_TRIM_URL_PUNCT)
+                dedup_key = curl or f"card:{ctitle}"
+                if dedup_key not in seen_urls:
+                    seen_urls.add(dedup_key)
                     resources.append(ResourceItem(
                         category="应用卡片",
                         title=ctitle,
@@ -201,27 +205,25 @@ def build_structured_report(
 
     # ── 板块三：金句与群友高光时刻 ────────────────────────────────────
     highlights: List[HighlightItem] = []
+    seq_map = {r.get("seq"): r for r in norm_rows if (r.get("seq") or 0) > 0}
 
-    # 1. 统计被引用回复次数最多的消息 (High Quotes)
-    quoted_counts = Counter(r.get("reply_seq", 0) for r in rows if r.get("reply_seq", 0) > 0)
+    quoted_counts = Counter(r.get("reply_seq") or 0 for r in norm_rows if (r.get("reply_seq") or 0) > 0)
     for reply_seq, count in quoted_counts.most_common(3):
         if count >= 1:
-            # 找到被引用的原始消息
-            orig_msg = next((r for r in rows if r.get("seq", 0) == reply_seq), None)
+            orig_msg = seq_map.get(reply_seq)
             if orig_msg:
                 highlights.append(HighlightItem(
-                    sender=orig_msg.get("sender_name", ""),
-                    quote=orig_msg.get("text", "").replace("\n", " ")[:120],
+                    sender=orig_msg.get("sender_name") or "",
+                    quote=(orig_msg.get("text") or "").replace("\n", " ")[:120],
                     interaction_info=f"引发热烈反响，被引用回复 {count} 次",
                     ref_anchor=_format_msg_anchor(orig_msg)
                 ))
 
-    # 2. 统计高频复读消息
-    for r in rows:
-        t = r.get("text", "")
+    for r in norm_rows:
+        t = r.get("text") or ""
         if "人复读了:" in t:
             highlights.append(HighlightItem(
-                sender=r.get("sender_name", ""),
+                sender=r.get("sender_name") or "",
                 quote=t,
                 interaction_info="群友高频一致复读",
                 ref_anchor=_format_msg_anchor(r)
@@ -234,20 +236,20 @@ def build_structured_report(
     senders = Counter()
     repeat_cnt = Counter()
 
-    for r in rows:
-        ts = r.get("ts", 0)
-        if ts:
-            hour = datetime.fromtimestamp(ts, TZ).hour
-            hourly[hour] += 1
-        name = r.get("sender_name", "") or f"QQ{r.get('sender_qq', '')}"
+    for r in norm_rows:
+        ts = r.get("ts") or 0
+        dt_r = safe_local_dt(ts)
+        if dt_r:
+            hourly[dt_r.hour] += 1
+        name = r.get("sender_name") or f"QQ{r.get('sender_qq', '')}"
         if name and name not in ("系统", "未知"):
             senders[name] += 1
-        txt = r.get("text", "").strip()
+        txt = (r.get("text") or "").strip()
         if len(txt) <= 20 and txt:
             repeat_cnt[txt] += 1
 
     profile = ActivityProfile(
-        total_messages=len(rows),
+        total_messages=len(norm_rows),
         active_members=len(senders),
         hourly_distribution=dict(hourly),
         top_chatters=senders.most_common(5),
@@ -289,7 +291,10 @@ def render_markdown(report: StructuredDigestReport) -> str:
         lines.append("- *本周期内未检测到外部技术仓库或文档链接分享*\n")
     else:
         for r in report.resources:
-            lines.append(f"- **[{r.category}]** [{r.title}]({r.url}) — *由 @{r.sender} 分享* `{r.ref_anchor}`")
+            if r.url.startswith(("http://", "https://")):
+                lines.append(f"- **[{r.category}]** [{r.title}]({r.url}) — *由 @{r.sender} 分享* `{r.ref_anchor}`")
+            else:
+                lines.append(f"- **[{r.category}]** {r.title} {r.url} — *由 @{r.sender} 分享* `{r.ref_anchor}`")
         lines.append("")
 
     # 3. 金句与群友高光时刻

@@ -18,7 +18,12 @@ import sys
 import json
 import re
 from collections import Counter
-from datetime import datetime
+
+try:
+    from ntqq_core import log_debug
+except ImportError:
+    def log_debug(*_a):
+        pass
 
 SYS_KINDS = ('system', 'empty')
 MEDIA_KINDS = ('image', 'sticker', 'audio')
@@ -90,7 +95,7 @@ def _extract_focus_items(allrows, class_groups, fmt_fn, kw_fn, anon_map=None,
         t = (r['text'] or '').strip()
         if not t:
             continue
-        # ??????????? JSON????? {align:center,...}??????
+        # 过滤微信/系统富文本 JSON 卡片（如 {align:center,...}），避免噪音进入重点雷达
         r_kind = r['kind'] if (hasattr(r, 'keys') and 'kind' in r.keys()) else (r.get('kind', '') if hasattr(r, 'get') else '')
         if (t.startswith('{') and ('items' in t or 'align' in t or 'prompt' in t)) or r_kind == 'system':
             continue
@@ -315,8 +320,17 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
     total_conv = 0
     total_msgs_in_groups = 0
 
+    meta_norm = dict(meta_info or {})
+    if 'cutoff_str' not in meta_norm and meta_norm.get('cutoff_text'):
+        meta_norm['cutoff_str'] = meta_norm['cutoff_text']
+    if 'window_str' not in meta_norm and meta_norm.get('window_text'):
+        meta_norm['window_str'] = meta_norm['window_text']
+    if 'anonymized' not in meta_norm:
+        meta_norm['anonymized'] = bool(anon_map)
+
     groups_data = []
-    for nconv, ntot, code, raw_name, rows, prev in prepared:
+    total_prev_in_groups = 0
+    for g_idx, (nconv, ntot, code, raw_name, rows, prev) in enumerate(prepared, 1):
         gm = anon_map.get(code, {})
         use_anon = is_anon or bool(gm)
 
@@ -331,7 +345,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
             return mask_names_fn(text, _gm) if (_ua and mask_names_fn) else text
 
         g_label = _code_lbl(code)
-        if meta_info.get('anonymized'):
+        if meta_norm.get('anonymized'):
             g_name = g_label
         else:
             g_name = raw_name or g_label
@@ -340,6 +354,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
         conv = [r for r in rows if r['kind'] not in SYS_KINDS]
         total_conv += len(conv)
         total_msgs_in_groups += len(rows)
+        total_prev_in_groups += (prev or 0)
 
         ts_list = [r['ts'] for r in rows]
         t0_g, t1_g = (min(ts_list), max(ts_list)) if ts_list else (0, 0)
@@ -452,6 +467,7 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
         peak_h = max(range(24), key=lambda h: hours_24[h]) if any(hours_24) else 0
 
         groups_data.append({
+            'idx': g_idx,
             'code': g_label,
             'name': g_name,
             'is_class': is_cls,
@@ -519,40 +535,56 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
                 'sender_name': sname,
                 'sender': sname if use_anon else (r_dict.get('sender') or r_dict.get('sender_qq')),
                 'timestamp': r_dict.get('ts') or r_dict.get('timestamp') or 0,
+                'ts': r_dict.get('ts') or r_dict.get('timestamp') or 0,
+                'hour': r_dict.get('hour', -1),
+                'day': r_dict.get('day', ''),
+                'group_code': _code_lbl(code) if use_anon else code,
+                'reply_seq': r_dict.get('reply_seq') or 0,
                 'seq': r_dict.get('msg_seq') or r_dict.get('seq') or 0,
             })
 
     try:
         from ntqq_links import extract_links_and_resources
         links_data = extract_links_and_resources(sanitized_rows_for_extract)
-    except Exception:
+    except Exception as e:
+        log_debug('HTML links 提取跳过: %r' % e)
         links_data = []
 
     try:
         from ntqq_action_items import extract_action_items_and_decisions
         actions_data = extract_action_items_and_decisions(sanitized_rows_for_extract)
-    except Exception:
+    except Exception as e:
+        log_debug('HTML actions 提取跳过: %r' % e)
         actions_data = {'actions': [], 'decisions': []}
 
     try:
         from ntqq_social import build_social_graph
         soc_graph = build_social_graph(sanitized_rows_for_extract)
-    except Exception:
+    except Exception as e:
+        log_debug('HTML social 提取跳过: %r' % e)
         soc_graph = {'nodes': [], 'edges': [], 'top_dyads': []}
 
     try:
         from ntqq_wrapped import build_chat_wrapped
-        wrapped_data = build_chat_wrapped(sanitized_rows_for_extract, period_name=meta_info.get('window_str') or '????')
-    except Exception:
+        wrapped_data = build_chat_wrapped(
+            sanitized_rows_for_extract,
+            period_name=meta_norm.get('window_str') or '本期简报'
+        )
+    except Exception as e:
+        log_debug('HTML wrapped 生成跳过: %r' % e)
         wrapped_data = {}
+
+    cur_n_val = meta_norm.get('cur_n', total_msgs_in_groups)
+    prev_n_val = meta_norm.get('prev_n', total_prev_in_groups)
+    delta_val = meta_norm.get('delta', cur_n_val - prev_n_val)
 
     return {
         'mode': 'digest',
-        'meta': meta_info,
+        'meta': meta_norm,
         'kpis': {
-            'total_msgs': meta_info.get('cur_n', total_msgs_in_groups),
-            'prev_msgs': meta_info.get('prev_n', 0),
-            'delta_msgs': meta_info.get('delta', 0),
+            'total_msgs': cur_n_val,
+            'prev_msgs': prev_n_val,
+            'delta_msgs': delta_val,
             'total_conv': total_conv,
             'group_count': len(groups_data),
             'people_count': len(global_people),
@@ -579,9 +611,14 @@ def build_digest_payload(meta_info, prepared, focus_rows, fmt_fn, kw_fn,
 
 def build_generic_payload(mode, meta_info, markdown_text, extra=None):
     """为 --member / --search / --ask 模式构建可视化数据包（自动将 Markdown 结构化解析为卡片与时间轴）。"""
+    meta_norm = dict(meta_info or {})
+    if 'cutoff_str' not in meta_norm and meta_norm.get('cutoff_text'):
+        meta_norm['cutoff_str'] = meta_norm['cutoff_text']
+    if 'window_str' not in meta_norm and meta_norm.get('window_text'):
+        meta_norm['window_str'] = meta_norm['window_text']
     payload = {
         'mode': mode,
-        'meta': meta_info,
+        'meta': meta_norm,
         'extra': extra or {},
         'markdown': markdown_text,
     }

@@ -8,14 +8,14 @@
   ntqq_report.py --search <关键词> --days 7
   ntqq_report.py --member <群友昵称> --days 30
 """
-import argparse, bisect, json, math, os, re, sqlite3, sys
+import argparse, bisect, contextlib, json, math, os, re, sqlite3, sys
 from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ntqq_core import (open_index, now_ts, fmt, parse_when, log, log_debug, log_warn, set_log_level,
-                       APP, OUTPUT, ensure_dirs, KNOW, GLOSSARY, TZ, MEDIA)
-import sqlite3 as _sq3
+                       APP, OUTPUT, ensure_dirs, KNOW, GLOSSARY, TZ, MEDIA, AT_MENTION_RE,
+                       row_to_dict, validate_sql_ident)
 
 SYS_KINDS = ('system', 'empty')
 MEDIA_KINDS = ('image', 'sticker', 'audio')
@@ -26,7 +26,7 @@ HEXONLY = re.compile(r'^[0-9A-Fa-f]{2,8}[A-Za-z0-9]{0,4}$')
 FILELIKE = re.compile(r'\.(jpg|jpeg|png|gif|webp|bmp|mp4|mp3|amr|silk|zip|rar|7z|pdf|docx?|xlsx?|txt)$', re.I)
 RE_FWD = re.compile(r'\[转发聊天记录[^\]]*\]')
 RE_RUN = re.compile(r'[\u4e00-\u9fffA-Za-z0-9]{2,}')
-AT_NAME = re.compile(r'@([^\s@|]{1,16})')
+AT_NAME = AT_MENTION_RE
 RE_CJK_RUN = re.compile(r'[\u4e00-\u9fff]{2,}')
 RE_ALNUM_RUN = re.compile(r'[A-Za-z0-9]{2,}')
 
@@ -80,7 +80,6 @@ def keywords(texts, min_count=3, topk=20):
 
 NOTICE_RE = re.compile(r'通知|公告|全体成员|@全体|报名|截止|考试|安排|开会|班会|答辩|选课|放假|调休|'
                          r'地点|时间|务必|重要|请大家|记得|提交|作业|补考|重修|会议|签到|统计|填表|接龙')
-CLASS_HINT = re.compile(r'班|通知群|学习|学院|年级')
 
 
 def focus_block(rows, title='重点速览（通知 / 公告 / 长文 / 转发）', top=40, anon=None):
@@ -204,9 +203,6 @@ def block(code, name, rows, max_msgs, show_media=False, prev_n=None, brief=False
 # ── 自然语言提问（关键词检索） ─────────────────────────────────────────────
 # 只在「结构助词/代词」处断句，绝不切 不/过/来 —— 否则「看不过来」会碎成「看」「来」
 PARTICLE = set('的了是吗呢吧啊哦嗯呀嘛着我你他她它们这那有在')
-COMMON2 = set('''这个 那个 什么 怎么 就是 不是 可以 没有 我们 你们 他们 有人 一个 现在 知道 因为 所以
-但是 然后 还是 已经 时候 感觉 真的 应该 可能 一样 出来 起来 一下 这样 那样 自己 大家 同学 老师 今天 明天 昨天
-早上 晚上 上午 下午 东西 事情 问题 时间 地方 有点 表示 直接 完全 突然 是不是 有没有 抱怨 什么 最近 刚刚'''.split())
 ASK_STOP = ['是不是', '有没有', '有没有人', '刚刚', '刚才', '今天', '昨天', '最近', '现在', '这几天',
             '这个', '那个', '有人', '请问', '帮我', '查一下', '看看', '谁', '什么', '怎么', '为啥',
             '为什么', '是不是有人', '在不在', '聊过', '聊了', '说过', '提到', '关于', '一下', '吗', '呢', '吧']
@@ -248,25 +244,15 @@ def _lcs_len(a, b):
     return best
 
 
-def load_aliases():
-    try:
-        with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
-            return json.load(fh).get('group_aliases', {})
-    except Exception:
-        return {}
-
-
-GENERIC = set('群 的 了 是 有 在 和 与 或 东方 同好 交流 会 社 们 大家')
-
-
 def resolve_group(idx, q, topn=4, grp_table='groups'):
     """从问句猜群：先做别名展开，再按最长公共子串打分。"""
+    grp_table = validate_sql_ident(grp_table)
     aliases = load_aliases()
     qq = q
     for k, v in aliases.items():
         if k in qq:
             qq = qq.replace(k, v)
-    rows = idx.execute('SELECT group_code, group_name FROM %s WHERE group_name IS NOT NULL' % grp_table).fetchall()
+    rows = idx.execute('SELECT group_code, group_name FROM "%s" WHERE group_name IS NOT NULL' % grp_table).fetchall()
     scored = []
     for code, name in rows:
         if not name:
@@ -283,6 +269,14 @@ def resolve_group(idx, q, topn=4, grp_table='groups'):
             scored.append((s, code, name))
     scored.sort(reverse=True)
     return scored[:topn]
+
+
+def load_aliases():
+    try:
+        with open(os.path.join(APP, 'config.json'), encoding='utf-8') as fh:
+            return json.load(fh).get('group_aliases', {})
+    except Exception:
+        return {}
 
 
 def extract_keywords(q):
@@ -722,10 +716,10 @@ def resolve_report_time_window(a: argparse.Namespace, now: int) -> Tuple[int, in
     """解析报告时间窗口 (t0, t1, span)。"""
     if a.since:
         t0 = parse_when(a.since)
-    elif a.hours:
-        t0 = now - int(a.hours * 3600)
-    elif a.days:
-        t0 = now - int(a.days * 86400)
+    elif a.hours is not None:
+        t0 = now - int(max(0.0, a.hours) * 3600)
+    elif a.days is not None:
+        t0 = now - int(max(0.0, a.days) * 86400)
     else:
         t0 = now - 6 * 3600
     t1 = parse_when(a.until) if a.until else now
@@ -735,9 +729,27 @@ def resolve_report_time_window(a: argparse.Namespace, now: int) -> Tuple[int, in
 
 def handle_list_groups(idx: sqlite3.Connection, grp_table: str) -> None:
     """输出群组或联系人列表。"""
-    for g in idx.execute('SELECT * FROM %s ORDER BY n DESC' % grp_table):
+    grp_table = validate_sql_ident(grp_table)
+    for g in idx.execute('SELECT * FROM "%s" ORDER BY n DESC' % grp_table):
         print('%s  %-30s %6d 条  %s ~ %s' % (g['group_code'], (g['group_name'] or '-')[:30], g['n'],
               fmt(g['first_ts'], '%m-%d %H:%M'), fmt(g['last_ts'], '%m-%d %H:%M')))
+
+
+def _sanitize_row_dict(r, anon_map, is_anon):
+    d = row_to_dict(r)
+    if not is_anon:
+        return d
+    code = d.get('group_code')
+    gm = anon_map.get(code, {})
+    sname = d.get('sender_name') or ''
+    if sname:
+        d['sender_name'] = anon_unknown(sname, gm)
+    txt = d.get('text') or ''
+    if txt:
+        d['text'] = mask_names(txt, gm)
+    if code in ANON_LABELS:
+        d['group_name'] = code_label(code)
+    return d
 
 
 def run_report(a: argparse.Namespace) -> Optional[dict]:
@@ -754,16 +766,23 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
     md_out = a.out
     html_out = a.html
     if a.out and a.out.lower().endswith(('.html', '.htm')):
-        html_out = a.html or a.out
+        if not a.no_html:
+            html_out = a.html or a.out
         md_out = None
     elif a.out and not a.no_html and not html_out:
         html_out = os.path.splitext(a.out)[0] + '.html'
 
-    msg_table = 'c2c_messages' if a.c2c else 'messages'
-    grp_table = 'c2c_groups' if a.c2c else 'groups'
+    msg_table = validate_sql_ident('c2c_messages' if a.c2c else 'messages')
+    grp_table = validate_sql_ident('c2c_groups' if a.c2c else 'groups')
 
-    idx = open_index()
-    idx.row_factory = sqlite3.Row
+    with contextlib.closing(open_index()) as idx:
+        idx.row_factory = sqlite3.Row
+        return _run_report_with_idx(a, idx, msg_table, grp_table, msgs_given, md_out, html_out)
+
+
+def _run_report_with_idx(a: argparse.Namespace, idx: sqlite3.Connection, msg_table: str, grp_table: str,
+                         msgs_given: bool, md_out: Optional[str], html_out: Optional[str]) -> Optional[dict]:
+    ANON_LABELS.clear()
 
     def meta(k, d='0'):
         r = idx.execute('SELECT value FROM meta WHERE key=?', (k,)).fetchone()
@@ -850,32 +869,38 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
     allrows = []
     ANON = {}
 
+    win_str = '%s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M'))
+    cut_str = fmt(cutoff, '%Y-%m-%d %H:%M') if cutoff else '未知'
     meta_info = {
         'title': ('QQ 私聊报告' if a.c2c else 'QQ 群聊报告') if not a.member else ('QQ 群友发言专报 · %s' % a.member),
-        'window_text': '%s ~ %s' % (fmt(t0, '%Y-%m-%d %H:%M'), fmt(t1, '%Y-%m-%d %H:%M')),
+        'window_text': win_str,
+        'window_str': win_str,
         'span_text': ('%g 小时' % (span / 3600)) if span < 86400 else ('%g 天' % (span / 86400)),
-        'cutoff_text': fmt(cutoff, '%Y-%m-%d %H:%M') if cutoff else '未知',
+        'cutoff_text': cut_str,
+        'cutoff_str': cut_str,
         'built_text': fmt(built, '%m-%d %H:%M') if built else '未知',
         'src_mode': src_mode_label,
         'scan_rows': scan_rows,
         'read_errors': errs,
         'is_c2c': bool(a.c2c),
+        'anonymized': bool(a.anonymize),
+        'class_mode': bool(a.class_mode),
         'bad_days': bad_days,
         'state_lines': [(scrub(ln.lstrip('> ').strip()) if a.anonymize else ln.lstrip('> ').strip()) for ln in state_lines],
     }
 
     if a.ask:
-        a_t0, label = parse_time_hint(a.ask, a.days or 7)
-        if a.hours:
-            a_t0 = now - int(a.hours * 3600); label = '近 %g 小时' % a.hours
-        if a.days:
-            a_t0 = now - int(a.days * 86400); label = '近 %g 天' % a.days
+        a_t0, label = parse_time_hint(a.ask, a.days if a.days is not None else 7)
+        if a.hours is not None:
+            a_t0 = now - int(max(0.0, a.hours) * 3600); label = '近 %g 小时' % a.hours
+        if a.days is not None:
+            a_t0 = now - int(max(0.0, a.days) * 86400); label = '近 %g 天' % a.days
         cand = resolve_group(idx, a.ask, grp_table=grp_table)
         gcodes = None; gdesc = '全部私聊' if a.c2c else '全部群'
         if a.group:
             picked = []
             for s in a.group:
-                for r in idx.execute('SELECT group_code, group_name FROM %s' % grp_table):
+                for r in idx.execute('SELECT group_code, group_name FROM "%s"' % grp_table):
                     if str(r[0]) == s or (r[1] and s in r[1]):
                         picked.append(r[0])
             if picked:
@@ -885,58 +910,83 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             gcodes = [c for c, _ in cand[:2]]
             gdesc = '、'.join(n or str(c) for c, n in cand[:2])
 
-        rows = ask(idx, a.ask, a_t0, t1, group_codes=gcodes, limit=(a.max_msgs or 40),
-                   msg_table=msg_table, grp_table=grp_table)
+        ask_limit = a.max_msgs if msgs_given else 40
+        kws, known, scored, _dropped, _n_total, raw_ask_rows = ask(
+            idx, a.ask, a_t0, t1, group_codes=gcodes, limit=ask_limit,
+            msg_table=msg_table, grp_table=grp_table
+        )
+        ctx_n = max(0, int(getattr(a, 'ctx', 3) or 0))
+        ask_anon = build_anon(idx, set(gcodes or []), msg_table=msg_table) if a.anonymize else {}
+        hits = []
+        for _score, _cnt, _ts, r, _hit_kws, row_idx in scored[:ask_limit]:
+            gc = r['group_code']
+            before = []
+            after = []
+            if ctx_n > 0:
+                b_i = row_idx - 1
+                while b_i >= 0 and len(before) < ctx_n and raw_ask_rows[b_i]['group_code'] == gc:
+                    if (raw_ask_rows[b_i]['text'] or '').strip():
+                        before.append(raw_ask_rows[b_i])
+                    b_i -= 1
+                before.reverse()
+                a_i = row_idx + 1
+                while a_i < len(raw_ask_rows) and len(after) < ctx_n and raw_ask_rows[a_i]['group_code'] == gc:
+                    if (raw_ask_rows[a_i]['text'] or '').strip():
+                        after.append(raw_ask_rows[a_i])
+                    a_i += 1
+            r_d = _sanitize_row_dict(r, ask_anon, a.anonymize)
+            r_d['before'] = [_sanitize_row_dict(x, ask_anon, a.anonymize) for x in before]
+            r_d['after'] = [_sanitize_row_dict(x, ask_anon, a.anonymize) for x in after]
+            hits.append(r_d)
+
         html_mode = 'ask'
-        q_clean = extract_keywords(a.ask) or a.ask
+        q_clean = ' / '.join(kws[:10]) if kws else a.ask
         out.append('## 提问: %s' % a.ask)
         out.append('- 解析范围: `%s` (%s)' % (gdesc, label))
         out.append('- 关键词: `%s`' % q_clean)
-        out.append('- 命中消息: **%d 条**' % len(rows))
+        out.append('- 命中消息: **%d 条**' % len(hits))
         out.append('')
-        if not rows:
+        if not hits:
             out.append('> 没有找到相关记录。你可以尝试：')
             out.append('> - 换用更简短的关键词，比如用「报销」替代「怎么报销发票」；')
             out.append('> - 用 `--group <群号/群名>` 指定要查的群；')
             out.append('> - 用 `--days 30` 放大时间范围。')
         else:
-            byg = Counter(r['group_name'] or str(r['group_code']) for r in rows)
+            byg = Counter((r.get('group_name') or str(r.get('group_code'))) for r in hits)
             out.append('- 分布: ' + ', '.join('%s(%d)' % (k, v) for k, v in byg.most_common(5)))
             out.append('')
             ask_items = []
-            for r in rows:
-                g_disp = r['group_name'] or str(r['group_code'])
-                out.append('### [%s] %s %s' % (g_disp, fmt(r['ts'], '%m-%d %H:%M'), r['sender_name']))
-                if r['before']:
-                    for br in r['before']:
-                        out.append('  - *%s %s: %s*' % (fmt(br['ts'], '%H:%M'), br['sender_name'], (br['text'] or '')[:120]))
-                out.append('  **%s**' % (r['text'] or ''))
-                if r['after']:
-                    for ar in r['after']:
-                        out.append('  - *%s %s: %s*' % (fmt(ar['ts'], '%H:%M'), ar['sender_name'], (ar['text'] or '')[:120]))
+            for r in hits:
+                g_disp = r.get('group_name') or str(r.get('group_code'))
+                out.append('### [%s] %s %s' % (g_disp, fmt(r['ts'], '%m-%d %H:%M'), r.get('sender_name') or '未知'))
+                for br in r['before']:
+                    out.append('  - *%s %s: %s*' % (fmt(br['ts'], '%H:%M'), br.get('sender_name') or '未知', (br.get('text') or '')[:120]))
+                out.append('  **%s**' % (r.get('text') or ''))
+                for ar in r['after']:
+                    out.append('  - *%s %s: %s*' % (fmt(ar['ts'], '%H:%M'), ar.get('sender_name') or '未知', (ar.get('text') or '')[:120]))
                 out.append('')
                 ask_items.append({
                     'time': fmt(r['ts'], '%m-%d %H:%M'),
                     'group': g_disp,
-                    'sender': r['sender_name'],
-                    'text': r['text'] or '',
-                    'before': [{'time': fmt(x['ts'], '%H:%M'), 'sender': x['sender_name'], 'text': (x['text'] or '')[:120]} for x in r['before']],
-                    'after': [{'time': fmt(x['ts'], '%H:%M'), 'sender': x['sender_name'], 'text': (x['text'] or '')[:120]} for x in r['after']],
+                    'sender': r.get('sender_name') or '未知',
+                    'text': r.get('text') or '',
+                    'before': [{'time': fmt(x['ts'], '%H:%M'), 'sender': x.get('sender_name') or '未知', 'text': (x.get('text') or '')[:120]} for x in r['before']],
+                    'after': [{'time': fmt(x['ts'], '%H:%M'), 'sender': x.get('sender_name') or '未知', 'text': (x.get('text') or '')[:120]} for x in r['after']],
                 })
             html_extra = {
                 'query': a.ask,
                 'scope': gdesc,
                 'time_label': label,
-                'matched_count': len(rows),
+                'matched_count': len(hits),
                 'summary_cards': [
                     {'label': '提问内容', 'value': a.ask[:18] + ('...' if len(a.ask) > 18 else ''), 'sub': q_clean},
                     {'label': '检索范围', 'value': gdesc[:16] + ('...' if len(gdesc) > 16 else ''), 'sub': label},
-                    {'label': '命中消息', 'value': '%d 条' % len(rows), 'sub': '涉及 %d 个会话' % len(byg)},
+                    {'label': '命中消息', 'value': '%d 条' % len(hits), 'sub': '涉及 %d 个会话' % len(byg)},
                 ],
                 'items': ask_items,
             }
 
-        result['ask'] = {'q': a.ask, 'scope': gdesc, 'label': label, 'n': len(rows)}
+        result['ask'] = {'q': a.ask, 'scope': gdesc, 'label': label, 'n': len(hits)}
         text = '\n'.join(out)
         if a.anonymize:
             text = scrub(text)
@@ -982,23 +1032,28 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
     if a.search:
         html_mode = 'search'
         rows = search_messages(idx, a.search, t0, t1, msg_table=msg_table)
+        s_anon = build_anon(idx, {r['group_code'] for r in rows}, msg_table=msg_table) if a.anonymize else {}
+        if a.anonymize:
+            for i_lbl, gc_lbl in enumerate(sorted({r['group_code'] for r in rows}), 1):
+                ANON_LABELS[gc_lbl] = ('私聊%d' if a.c2c else '群%d') % i_lbl
         conv = [r for r in rows if r['kind'] not in SYS_KINDS]
         out.append('## 关键词: %r （共 %d 条，有效对话 %d 条）' % (a.search, len(rows), len(conv)))
         out.append('')
-        names = {r['group_code']: r['group_name'] for r in rows}
+        names = {r['group_code']: (code_label(r['group_code']) if a.anonymize else r['group_name']) for r in rows}
         byg = Counter(r['group_code'] for r in rows)
-        out.append('- 分布: ' + ', '.join('%s(%s)=%d' % (names.get(c) or '-', c, v) for c, v in byg.most_common(20)))
+        out.append('- 分布: ' + ', '.join('%s(%s)=%d' % (names.get(c) or '-', code_label(c), v) for c, v in byg.most_common(20)))
         out.append('')
         s_items = []
         for r in rows[:a.max_msgs]:
-            g_disp = names.get(r['group_code']) or r['group_code']
-            out.append('%s [%s] %s: %s' % (fmt(r['ts'], '%m-%d %H:%M'), g_disp,
-                                           r['sender_name'], (r['text'] or '')[:200]))
+            rd = _sanitize_row_dict(r, s_anon, a.anonymize)
+            g_disp = names.get(r['group_code']) or code_label(r['group_code'])
+            out.append('%s [%s] %s: %s' % (fmt(rd['ts'], '%m-%d %H:%M'), g_disp,
+                                           rd.get('sender_name') or '未知', (rd.get('text') or '')[:200]))
             s_items.append({
-                'time': fmt(r['ts'], '%m-%d %H:%M'),
-                'sender': '%s [%s]' % (r['sender_name'], g_disp),
-                'kind': r['kind'] or 'text',
-                'text': (r['text'] or '')[:360],
+                'time': fmt(rd['ts'], '%m-%d %H:%M'),
+                'sender': '%s [%s]' % (rd.get('sender_name') or '未知', g_disp),
+                'kind': rd.get('kind') or 'text',
+                'text': (rd.get('text') or '')[:360],
                 'is_notice': False,
             })
         result['n'] = len(rows)
@@ -1032,7 +1087,7 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             if not a.group and cg:
                 a.group = [str(x) for x in cg]
         if a.group:
-            allg = idx.execute('SELECT group_code, group_name FROM %s ORDER BY group_code' % grp_table).fetchall()
+            allg = idx.execute('SELECT group_code, group_name FROM "%s" ORDER BY group_code' % grp_table).fetchall()
             targets = []
             for s in a.group:
                 s = s.strip()
@@ -1045,7 +1100,7 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 return None
         else:
             targets = [(r['group_code'], r['group_name']) for r in idx.execute(
-                'SELECT group_code, group_name FROM %s WHERE last_ts>=? ORDER BY n DESC' % grp_table, (t0,))]
+                'SELECT group_code, group_name FROM "%s" WHERE last_ts>=? ORDER BY n DESC' % grp_table, (t0,))]
 
         ANON = build_anon(idx, set(c for c, _ in targets), msg_table=msg_table) if a.anonymize else {}
         if a.anonymize:
@@ -1053,17 +1108,23 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 ANON_LABELS[c] = ('私聊%d' if a.c2c else '群%d') % i
 
         for code, name in targets:
-            rows = idx.execute('SELECT * FROM %s WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts' % msg_table,
+            rows = idx.execute('SELECT * FROM "%s" WHERE group_code=? AND ts>=? AND ts<=? ORDER BY ts' % msg_table,
                                (code, t0, t1)).fetchall()
             if not rows:
                 continue
             nconv = sum(1 for r in rows if r['kind'] not in SYS_KINDS)
             if nconv < a.min_conv:
                 continue
-            prev = idx.execute('SELECT COUNT(*) FROM %s WHERE group_code=? AND ts>=? AND ts<?' % msg_table,
+            prev = idx.execute('SELECT COUNT(*) FROM "%s" WHERE group_code=? AND ts>=? AND ts<?' % msg_table,
                                (code, t0 - span, t0)).fetchone()[0]
             prepared.append((nconv, len(rows), code, name, rows, prev))
         prepared.sort(key=lambda x: -x[0])
+        cur_total = sum(x[1] for x in prepared)
+        prev_total = sum(x[5] or 0 for x in prepared)
+        meta_info['cur_n'] = cur_total
+        meta_info['prev_n'] = prev_total
+        meta_info['delta'] = cur_total - prev_total
+
         out.append('- 发生真实对话的%s **%d 个**' % ('联系人' if a.c2c else '群', len(prepared)))
         out.append('')
         if prepared:
@@ -1091,9 +1152,10 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             if getattr(a, 'structured', False):
                 from ntqq_segmenter import ConversationSegmenter
                 from ntqq_report_schema import build_structured_report, render_markdown
+                dict_rows = [_sanitize_row_dict(r, ANON, a.anonymize) for r in rows]
                 segmenter = ConversationSegmenter()
-                clusters = segmenter.segment_messages(rows)
-                rep = build_structured_report(rows, clusters, disp_name or f"群_{code}", code)
+                clusters = segmenter.segment_messages(dict_rows)
+                rep = build_structured_report(dict_rows, clusters, disp_name or f"群_{code}", code)
                 txt = render_markdown(rep)
                 extra = clusters
             else:
@@ -1127,35 +1189,33 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 except Exception as e:
                     log_debug('保存 micro_digests 异常: %s' % e)
 
+        sanitized_all = [_sanitize_row_dict(r, ANON, a.anonymize) for item in prepared for r in item[4]]
+
         inc_links = getattr(a, 'links', False) or getattr(a, 'brief', False)
         if inc_links:
             from ntqq_links import extract_links_and_resources, format_links_markdown
-            all_target_rows = [r for item in prepared for r in item[4]]
-            links_extracted = extract_links_and_resources(all_target_rows)
+            links_extracted = extract_links_and_resources(sanitized_all)
             if links_extracted:
                 out.append(format_links_markdown(links_extracted))
 
         inc_actions = getattr(a, 'actions', False) or getattr(a, 'class_mode', False) or getattr(a, 'brief', False)
         if inc_actions:
             from ntqq_action_items import extract_action_items_and_decisions, format_action_items_markdown
-            all_target_rows = [r for item in prepared for r in item[4]]
-            act_data = extract_action_items_and_decisions(all_target_rows)
+            act_data = extract_action_items_and_decisions(sanitized_all)
             if act_data.get('actions') or act_data.get('decisions'):
                 out.append(format_action_items_markdown(act_data))
 
         inc_social = getattr(a, 'social', False) or getattr(a, 'brief', False)
         if inc_social:
             from ntqq_social import build_social_graph, format_social_graph_markdown
-            all_target_rows = [r for item in prepared for r in item[4]]
-            soc_graph = build_social_graph(all_target_rows)
+            soc_graph = build_social_graph(sanitized_all)
             if soc_graph.get('nodes'):
                 out.append(format_social_graph_markdown(soc_graph))
 
         if getattr(a, 'wrapped', False):
-            from ntqq_wrapped import build_chat_wrapped, format_wrapped_markdown, render_wrapped_html
-            all_target_rows = [r for item in prepared for r in item[4]]
+            from ntqq_wrapped import build_chat_wrapped, format_wrapped_markdown
             p_name = '群聊时光机'
-            wrapped_data = build_chat_wrapped(all_target_rows, period_name=p_name)
+            wrapped_data = build_chat_wrapped(sanitized_all, period_name=p_name)
             out.append(format_wrapped_markdown(wrapped_data))
             if html_out:
                 html_mode = 'wrapped'
@@ -1201,13 +1261,13 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
                 f.write(html_str)
             log('[html] %s (%.1f KB)' % (html_out, len(html_str.encode('utf-8')) / 1024.0))
 
-            # 伴生生成独立全屏 Wrapped 回顾网页
             if allrows and not getattr(a, 'wrapped', False):
                 try:
                     from ntqq_wrapped import build_chat_wrapped, render_wrapped_html
                     wrapped_path = html_out.replace('简报', 'Wrapped') if '简报' in html_out else (os.path.splitext(html_out)[0] + '_wrapped.html')
                     w_title = meta_info.get('window_str') or '本期简报'
-                    w_data = build_chat_wrapped(allrows, period_name=w_title)
+                    w_rows = [_sanitize_row_dict(r, ANON, a.anonymize) for r in allrows]
+                    w_data = build_chat_wrapped(w_rows, period_name=w_title)
                     w_html = render_wrapped_html(w_data)
                     with open(wrapped_path, 'w', encoding='utf-8') as wf:
                         wf.write(w_html)
@@ -1224,30 +1284,33 @@ def run_report(a: argparse.Namespace) -> Optional[dict]:
             from ntqq_action_items import extract_action_items_and_decisions
             vault_dir = a.obsidian_vault or os.path.join(OUTPUT, 'obsidian')
             for nconv, ntot, code, name, rows, _ in prepared:
-                conv = [r for r in rows if r['kind'] not in SYS_KINDS]
-                ts_list = [r['ts'] for r in rows]
+                obs_rows = [_sanitize_row_dict(r, ANON, a.anonymize) for r in rows]
+                disp_name = code_label(code) if a.anonymize else (name or str(code))
+                disp_id = str(code_label(code)) if a.anonymize else str(code)
+                conv = [r for r in obs_rows if r.get('kind') not in SYS_KINDS]
+                ts_list = [r['ts'] for r in obs_rows]
                 first_ts = min(ts_list) if ts_list else 0
                 last_ts = max(ts_list) if ts_list else 0
-                kws = [w for w, _ in keywords([r['text'] for r in conv if r['text']], min_count=2, topk=10)]
-                act_res = extract_action_items_and_decisions(rows)
-                links_res = extract_links_and_resources(rows)
+                kws = [w for w, _ in keywords([r.get('text') for r in conv if r.get('text')], min_count=2, topk=10)]
+                act_res = extract_action_items_and_decisions(obs_rows)
+                links_res = extract_links_and_resources(obs_rows)
                 dialogues = [
                     {
-                        'sender': (r['sender_name'] if 'sender_name' in r.keys() else '群友') or '群友',
+                        'sender': r.get('sender_name') or '群友',
                         'time': fmt(r['ts'], '%H:%M'),
-                        'text': (r['text'] if 'text' in r.keys() else '') or ''
+                        'text': r.get('text') or ''
                     }
                     for r in conv[:30]
                 ]
                 obs_payload = {
-                    'title': f'QQ群聊简报 - {name or code}',
-                    'group_id': str(code),
-                    'group_name': name or str(code),
+                    'title': f'QQ群聊简报 - {disp_name}',
+                    'group_id': disp_id,
+                    'group_name': disp_name,
                     'date_str': fmt(last_ts, '%Y-%m-%d') if last_ts else '',
                     'period_str': f"{fmt(first_ts, '%m-%d %H:%M')} ~ {fmt(last_ts, '%m-%d %H:%M')}" if first_ts else '',
-                    'total_messages': len(rows),
-                    'active_members': len(set(r['sender_name'] for r in conv if r['sender_name'])),
-                    'summary': f'统计时段内共收到 {len(rows)} 条消息，产生 {len(conv)} 条有效对话。',
+                    'total_messages': len(obs_rows),
+                    'active_members': len(set(r.get('sender_name') for r in conv if r.get('sender_name'))),
+                    'summary': f'统计时段内共收到 {len(obs_rows)} 条消息，产生 {len(conv)} 条有效对话。',
                     'keywords': kws,
                     'actions': act_res.get('actions', []),
                     'decisions': act_res.get('decisions', []),
