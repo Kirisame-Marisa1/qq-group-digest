@@ -6,25 +6,11 @@ ntqq_wrapped.py - 群聊时光机与年度/阶段总结生成器 (Chat Wrapped)
 
 import html
 from collections import Counter
-from datetime import datetime
 
-
-def _get_val(row, keys, default=None):
-    """同时兼容 dict 和 sqlite3.Row，并支持字段别名回退。"""
-    if isinstance(keys, str):
-        keys = [keys]
-    for k in keys:
-        if isinstance(row, dict):
-            if k in row and row[k] is not None:
-                return row[k]
-        else:
-            try:
-                val = row[k]
-                if val is not None:
-                    return val
-            except (KeyError, IndexError, TypeError):
-                pass
-    return default
+try:
+    from ntqq_core import get_row_val as _get_val
+except ImportError:
+    from scripts.ntqq_core import get_row_val as _get_val
 
 
 def build_chat_wrapped(messages: list, period_name: str = "年度时光机") -> dict:

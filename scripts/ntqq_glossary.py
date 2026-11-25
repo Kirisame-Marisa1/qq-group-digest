@@ -9,10 +9,10 @@
   ntqq_glossary.py --render                         重新生成 关键词库.md
   ntqq_glossary.py --list                           已收录词
 """
-import argparse, json, os, re, sys, time
+import argparse, contextlib, json, os, re, sqlite3, sys, time
 from collections import Counter, defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import open_index, ensure_dirs, GLOSSARY, now_ts, fmt, log, log_debug
+from ntqq_core import atomic_write_json, atomic_write_text, open_index, ensure_dirs, GLOSSARY, now_ts, fmt, log, log_debug, set_log_level
 
 STORE = os.path.join(GLOSSARY, 'terms.json')
 DOC = os.path.join(GLOSSARY, '关键词库.md')
@@ -36,22 +36,22 @@ def load_store():
 def save_store(st):
     ensure_dirs()
     st.setdefault('meta', {})['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
-    with open(STORE, 'w', encoding='utf-8') as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
+    atomic_write_json(STORE, st, indent=2)
 
 
 def iter_texts(days, groups=None):
-    idx = open_index(); idx.row_factory = __import__('sqlite3').Row
-    cut = now_ts() - int(days * 86400)
-    if groups:
-        q = 'SELECT ts,group_code,group_name,sender_name,text FROM messages WHERE ts>=? AND group_code IN (%s)' % ','.join('?' * len(groups))
-        rows = idx.execute(q, [cut] + list(groups))
-    else:
-        rows = idx.execute('SELECT ts,group_code,group_name,sender_name,text FROM messages WHERE ts>=?', (cut,))
-    for r in rows:
-        t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', r['text'] or '')
-        if t.strip():
-            yield r['ts'], r['group_code'], r['group_name'], r['sender_name'], t
+    with contextlib.closing(open_index()) as idx:
+        idx.row_factory = sqlite3.Row
+        cut = now_ts() - int(days * 86400)
+        if groups:
+            q = 'SELECT ts,group_code,group_name,sender_name,text FROM messages WHERE ts>=? AND group_code IN (%s)' % ','.join('?' * len(groups))
+            rows = idx.execute(q, [cut] + list(groups))
+        else:
+            rows = idx.execute('SELECT ts,group_code,group_name,sender_name,text FROM messages WHERE ts>=?', (cut,))
+        for r in rows:
+            t = re.sub(r'\[转发聊天记录[^\]]*\]', ' ', r['text'] or '')
+            if t.strip():
+                yield r['ts'], r['group_code'], r['group_name'], r['sender_name'], t
 
 
 def ngrams(text, nmin=2, nmax=5):
@@ -111,8 +111,8 @@ def scan(days, top, min_count, groups=None):
 
 
 def show_scan(keep, top):
-    idx = open_index()
-    names = {r[0]: r[1] for r in idx.execute('SELECT group_code, MAX(group_name) FROM messages GROUP BY group_code')}
+    with contextlib.closing(open_index()) as idx:
+        names = {r[0]: r[1] for r in idx.execute('SELECT group_code, MAX(group_name) FROM messages GROUP BY group_code')}
     spec = [x for x in keep if x['spec'] >= 0.7 and x['total'] >= 8]
     glob = [x for x in keep if x['spec'] < 0.7 and x['groups'] >= 5 and x['total'] >= 30]
     print('=' * 78)
@@ -131,21 +131,24 @@ def show_scan(keep, top):
 
 
 def context(term, limit, days=90, groups=None):
-    idx = open_index(); idx.row_factory = __import__('sqlite3').Row
-    cut = now_ts() - int(days * 86400)
-    if groups:
-        q = ("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? AND group_code IN (%s) ORDER BY ts"
-             % ','.join('?' * len(groups)))
-        rows = idx.execute(q, [cut, '%' + term + '%'] + list(groups)).fetchall()
-    else:
-        rows = idx.execute("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? ORDER BY ts",
-                           (cut, '%' + term + '%')).fetchall()
+    with contextlib.closing(open_index()) as idx:
+        idx.row_factory = sqlite3.Row
+        cut = now_ts() - int(days * 86400)
+        escaped_term = term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        if groups:
+            q = ("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? ESCAPE '\\' AND group_code IN (%s) ORDER BY ts"
+                 % ','.join('?' * len(groups)))
+            rows = idx.execute(q, [cut, '%' + escaped_term + '%'] + list(groups)).fetchall()
+        else:
+            rows = idx.execute("SELECT ts,group_name,sender_name,text FROM messages WHERE ts>=? AND text LIKE ? ESCAPE '\\' ORDER BY ts",
+                               (cut, '%' + escaped_term + '%')).fetchall()
     print('=== 「%s」近 %d 天出现 %d 次，前 %d 条 ===' % (term, days, len(rows), limit))
-    from collections import Counter
     print('  按群分布: ' + ', '.join('%s=%d' % (g or '-', c) for g, c in Counter(r['group_name'] for r in rows).most_common(8)))
+    term_re = re.compile(re.escape(term), re.I)
     for r in rows[:limit]:
         t = (r['text'] or '').replace(chr(10), ' ')
-        i = t.find(term)
+        m = term_re.search(t)
+        i = m.start() if m else 0
         print('  %s [%s] %s: ...%s...' % (fmt(r['ts'], '%m-%d %H:%M'), (r['group_name'] or '')[:14], r['sender_name'], t[max(0, i - 55): i + 75]))
     if not rows:
         print('  （没有命中）')
@@ -153,7 +156,8 @@ def context(term, limit, days=90, groups=None):
 
 def apply_draft(path):
     st = load_store()
-    draft = json.load(open(path, encoding='utf-8'))
+    with open(path, encoding='utf-8') as f:
+        draft = json.load(f)
     n = 0
     for e in draft:
         k = e['term']
@@ -205,38 +209,46 @@ def render():
                         L.append('  - %s' % e)
                 L.append('')
     ensure_dirs()
-    with open(DOC, 'w', encoding='utf-8') as f:
-        f.write(chr(10).join(L))
+    atomic_write_text(DOC, chr(10).join(L))
     log('[glossary] 文档 -> %s' % DOC)
 
 
+def _parse_groups_arg(raw):
+    if not raw:
+        return None
+    gs = [int(x.strip()) for x in raw.split(',') if x.strip().isdigit()]
+    return gs or None
+
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--scan', action='store_true')
-    ap.add_argument('--days', type=float, default=60)
-    ap.add_argument('--top', type=int, default=60)
-    ap.add_argument('--min-count', type=int, default=6)
-    ap.add_argument('--groups', default=None)
-    ap.add_argument('--context', default=None)
-    ap.add_argument('--limit', type=int, default=15)
-    ap.add_argument('--apply', default=None)
-    ap.add_argument('--render', action='store_true')
-    ap.add_argument('--list', action='store_true')
+    ap = argparse.ArgumentParser(description='群聊关键词库：扫描候选词、查询上下文、合并与渲染文档')
+    ap.add_argument('--scan', action='store_true', help='扫描近期消息提取黑话/流行语候选词')
+    ap.add_argument('--days', type=float, default=60, help='扫描天数（默认 60）')
+    ap.add_argument('--top', type=int, default=60, help='每类最多展示词数（默认 60）')
+    ap.add_argument('--min-count', type=int, default=6, help='最小出现次数阈值（默认 6）')
+    ap.add_argument('--groups', default=None, help='逗号分隔的群号过滤')
+    ap.add_argument('--context', default=None, help='查询某个词的历史使用上下文')
+    ap.add_argument('--limit', type=int, default=15, help='--context 最多返回条数')
+    ap.add_argument('--apply', default=None, help='合并释义 JSON 草案到关键词库')
+    ap.add_argument('--render', action='store_true', help='重新生成 关键词库.md')
+    ap.add_argument('--list', action='store_true', help='列出已收录词条')
+    ap.add_argument('--verbose', action='store_true', help='显示调试日志')
     a = ap.parse_args()
+    if a.verbose:
+        set_log_level(True)
     ensure_dirs()
     if a.apply:
         apply_draft(a.apply); return
     if a.render:
         render(); return
     if a.context:
-        gs2 = [int(x) for x in a.groups.split(',')] if a.groups else None
-        context(a.context, a.limit, a.days, gs2); return
-    if a.list:
+        context(a.context, a.limit, a.days, _parse_groups_arg(a.groups)); return
+    if a.list and not a.scan:
         st = load_store()
         for k, v in sorted(st['terms'].items()):
             print('  %-16s %-8s %s' % (k, v.get('type', '?'), (v.get('meaning') or '')[:70]))
         print('共 %d 条' % len(st['terms'])); return
-    gs = [int(x) for x in a.groups.split(',')] if a.groups else None
+    gs = _parse_groups_arg(a.groups)
     keep = scan(a.days, a.top, a.min_count, gs)
     show_scan(keep, a.top)
 

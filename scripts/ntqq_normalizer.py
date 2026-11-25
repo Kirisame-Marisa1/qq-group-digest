@@ -92,24 +92,25 @@ class NoiseNormalizer:
         for m in messages:
             if isinstance(m, NormalizedMessage):
                 nm = m
-            elif isinstance(m, dict):
+            elif isinstance(m, dict) or hasattr(m, 'keys'):
+                get = (lambda k, d=None: m[k] if k in m.keys() and m[k] is not None else d) if not isinstance(m, dict) else (lambda k, d=None: m[k] if m.get(k) is not None else d)
                 nm = NormalizedMessage(
-                    msg_id=m.get('msg_id', 0),
-                    seq=m.get('seq', 0),
-                    ts=m.get('ts', 0),
-                    day=m.get('day', ''),
-                    hour=m.get('hour', -1),
-                    group_code=m.get('group_code', 0),
-                    group_name=m.get('group_name', ''),
-                    sender_uid=m.get('sender_uid', ''),
-                    sender_qq=m.get('sender_qq', 0),
-                    sender_name=m.get('sender_name', ''),
-                    direction=m.get('direction', 0),
-                    msg_type=m.get('msg_type', 0),
-                    subtype=m.get('subtype', 0),
-                    kind=m.get('kind', 'text'),
-                    text=m.get('text', ''),
-                    reply_seq=m.get('reply_seq', 0),
+                    msg_id=get('msg_id', 0),
+                    seq=get('seq', 0),
+                    ts=get('ts', 0),
+                    day=get('day', ''),
+                    hour=get('hour', -1),
+                    group_code=get('group_code', 0),
+                    group_name=get('group_name', ''),
+                    sender_uid=get('sender_uid', ''),
+                    sender_qq=get('sender_qq', 0),
+                    sender_name=get('sender_name', ''),
+                    direction=get('direction', 0),
+                    msg_type=get('msg_type', 0),
+                    subtype=get('subtype', 0),
+                    kind=get('kind', 'text'),
+                    text=get('text', '') or '',
+                    reply_seq=get('reply_seq', 0),
                 )
             elif isinstance(m, (tuple, list)):
                 # 兼容 ntqq_build 内部 16 元组格式
@@ -128,7 +129,7 @@ class NoiseNormalizer:
                     msg_type=m[10],
                     subtype=m[11],
                     kind=m[12],
-                    text=m[13],
+                    text=m[13] or '',
                     reply_seq=m[14],
                     seq=m[15] if len(m) > 15 else 0,
                 )
@@ -143,12 +144,13 @@ class NoiseNormalizer:
         folded_results: List[NormalizedMessage] = []
         i = 0
         n = len(norm_list)
+        skip_kinds = ('forward', 'file', 'system', 'image', 'sticker', 'audio', 'video', 'call')
 
         while i < n:
             curr = norm_list[i]
-            # 仅对有文本且非转发/文件的普通消息进行复读折叠
-            curr_txt = curr.text.strip()
-            if not curr_txt or curr.kind in ('forward', 'file', 'system'):
+            # 仅对有文本且非多媒体/转发/文件/系统的普通消息进行复读折叠
+            curr_txt = (curr.text or '').strip()
+            if not curr_txt or curr.kind in skip_kinds:
                 folded_results.append(curr)
                 i += 1
                 continue
@@ -157,8 +159,8 @@ class NoiseNormalizer:
             repeat_senders = [curr.sender_name or f"QQ{curr.sender_qq}"]
             while j < n:
                 nxt = norm_list[j]
-                # 必须同群且文本完全一致
-                if nxt.group_code == curr.group_code and nxt.text.strip() == curr_txt:
+                # 必须同群、同非空文本且同属可折叠文本类消息
+                if nxt.group_code == curr.group_code and nxt.kind not in skip_kinds and (nxt.text or '').strip() == curr_txt:
                     sender_label = nxt.sender_name or f"QQ{nxt.sender_qq}"
                     if sender_label not in repeat_senders:
                         repeat_senders.append(sender_label)

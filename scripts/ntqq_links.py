@@ -5,7 +5,11 @@ ntqq_links.py - 群聊资源与链接归集提取器
 
 import re
 import urllib.parse
-from datetime import datetime
+
+try:
+    from ntqq_core import get_row_val as _get_val, safe_local_dt
+except ImportError:
+    from scripts.ntqq_core import get_row_val as _get_val, safe_local_dt
 
 # 匹配 URL 的正则（避开中文标点与常见括弧）
 URL_REGEX = re.compile(
@@ -13,7 +17,7 @@ URL_REGEX = re.compile(
     re.IGNORECASE
 )
 
-TRAILING_PUNCT = ".,!?:;)]}>'\">"
+TRAILING_PUNCT = ".,!?:;]}>'\">"
 
 # 常见追踪参数（清洗后可精确去重）
 TRACKING_PARAMS = {
@@ -27,7 +31,7 @@ CATEGORY_MAP = {
     "code": ["github.com", "gitee.com", "gitlab.com", "huggingface.co", "npmjs.com", "pypi.org", "crates.io"],
     "article": ["mp.weixin.qq.com", "zhihu.com", "zhuanlan.zhihu.com", "juejin.cn", "csdn.net", "medium.com", "sspai.com", "infoq.cn", "cnblogs.com", "v2ex.com", "arxiv.org"],
     "video": ["bilibili.com", "b23.tv", "youtube.com", "youtu.be", "douyin.com", "kuaishou.com"],
-    "drive": ["pan.baidu.com", "aliyundrive.com", "quark.cn", "123pan.com", "lanzou", "lanzoui.com", "mega.nz", "drive.google.com"],
+    "drive": ["pan.baidu.com", "aliyundrive.com", "quark.cn", "123pan.com", "lanzou.com", "lanzoui.com", "lanzoux.com", "lanzouw.com", "lanzouy.com", "lanzoup.com", "mega.nz", "drive.google.com"],
     "doc": ["docs.qq.com", "feishu.cn", "kdocs.cn", "notion.so", "yuque.com", "wolai.com", "docs.google.com"],
 }
 
@@ -41,28 +45,13 @@ CATEGORY_LABELS = {
 }
 
 
-def _get_val(row, keys, default=None):
-    """同时兼容 dict 和 sqlite3.Row，并支持字段别名回退。"""
-    if isinstance(keys, str):
-        keys = [keys]
-    for k in keys:
-        if isinstance(row, dict):
-            if k in row and row[k] is not None:
-                return row[k]
-        else:
-            try:
-                val = row[k]
-                if val is not None:
-                    return val
-            except (KeyError, IndexError, TypeError):
-                pass
-    return default
-
-
 def clean_url(raw_url: str) -> str:
     """去除 URL 中的跟踪参数，末尾斜杠及标点归一化"""
     try:
-        url_stripped = raw_url.rstrip(TRAILING_PUNCT).rstrip("/?#&")
+        url_stripped = raw_url.rstrip(TRAILING_PUNCT)
+        while url_stripped.endswith(")") and url_stripped.count(")") > url_stripped.count("("):
+            url_stripped = url_stripped[:-1]
+        url_stripped = url_stripped.rstrip("/?#&")
         parsed = urllib.parse.urlparse(url_stripped)
         qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         cleaned_qs = []
@@ -75,7 +64,7 @@ def clean_url(raw_url: str) -> str:
             cleaned_qs.append((k, v))
         new_query = urllib.parse.urlencode(cleaned_qs)
         cleaned = urllib.parse.urlunparse((
-            parsed.scheme,
+            parsed.scheme.lower(),
             parsed.netloc.lower(),
             parsed.path.rstrip("/") if parsed.path != "/" else parsed.path,
             parsed.params,
@@ -88,10 +77,12 @@ def clean_url(raw_url: str) -> str:
 
 
 def categorize_url(url: str) -> str:
-    """根据域名分类"""
-    domain = urllib.parse.urlparse(url).netloc.lower()
+    """根据精确域名或子域名后缀分类"""
+    host = urllib.parse.urlparse(url).netloc.lower().split(":", 1)[0]
+    if not host:
+        return "other"
     for cat, domains in CATEGORY_MAP.items():
-        if any(d in domain for d in domains):
+        if any(host == d or host.endswith("." + d) for d in domains):
             return cat
     return "other"
 
@@ -160,7 +151,8 @@ def extract_links_and_resources(messages: list) -> list[dict]:
     for item in results:
         best_ctx = max(item["contexts"], key=len) if item["contexts"] else ""
         item["context"] = best_ctx
-        item["last_time"] = datetime.fromtimestamp(item["last_timestamp"]).strftime("%m-%d %H:%M") if item["last_timestamp"] else ""
+        dt = safe_local_dt(item["last_timestamp"])
+        item["last_time"] = dt.strftime("%m-%d %H:%M") if dt else ""
 
     return results
 

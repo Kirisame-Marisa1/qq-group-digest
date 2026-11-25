@@ -5,10 +5,12 @@ ntqq_action_items.py - 待办事项与决议雷达提取器
 """
 
 import re
-from datetime import datetime
 
-# 责任人匹配
-MENTION_RE = re.compile(r'@([^\s@|]{1,16})')
+try:
+    from ntqq_core import AT_MENTION_RE as MENTION_RE, get_row_val as _get_val, safe_local_dt
+except ImportError:
+    from scripts.ntqq_core import AT_MENTION_RE as MENTION_RE, get_row_val as _get_val, safe_local_dt
+
 GROUP_ASSIGNEES = ('大家', '各位', '所有人', '全体成员', '全员', '同学们', '组员')
 
 # 截止时间匹配
@@ -38,24 +40,6 @@ DECISION_RE = re.compile(
 )
 
 
-def _get_val(row, keys, default=None):
-    """同时兼容 dict 和 sqlite3.Row，并支持字段别名回退。"""
-    if isinstance(keys, str):
-        keys = [keys]
-    for k in keys:
-        if isinstance(row, dict):
-            if k in row and row[k] is not None:
-                return row[k]
-        else:
-            try:
-                val = row[k]
-                if val is not None:
-                    return val
-            except (KeyError, IndexError, TypeError):
-                pass
-    return default
-
-
 def extract_action_items_and_decisions(messages: list) -> dict:
     """
     分析消息流，提取具有明确行动意向的待办事项与决议。
@@ -74,12 +58,13 @@ def extract_action_items_and_decisions(messages: list) -> dict:
         ts = int(_get_val(msg, ["ts", "timestamp"], 0) or 0)
         seq = int(_get_val(msg, ["seq", "msg_seq"], 0) or 0)
         sender_name = _get_val(msg, ["sender_name", "name", "disp_name"], "未知群友")
-        time_str = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if ts else ""
+        dt = safe_local_dt(ts)
+        time_str = dt.strftime("%m-%d %H:%M") if dt else ""
 
         # --- 1. 决议 / 共识抽取 ---
         d_match = DECISION_RE.search(text)
         if d_match:
-            decision_body = d_match.group(0).strip()
+            decision_body = re.sub(r'\s+', ' ', d_match.group(0)).strip()
             sig = re.sub(r'\s+', '', decision_body)
             if sig not in seen_decision_signatures:
                 seen_decision_signatures.add(sig)
@@ -92,8 +77,9 @@ def extract_action_items_and_decisions(messages: list) -> dict:
                 })
 
         # --- 2. 待办事项抽取 ---
-        # 排除典型闲聊与已完成夸奖
-        if CASUAL_IGNORE_RE.search(text) and not any(k in text for k in ("请于", "务必", "截止", "记得在", "前提交", "前完成", "前填写")):
+        # 排除典型闲聊与已完成夸奖（但保留包含明确截止/强制指令词的消息）
+        has_strong_cue = any(k in text for k in ("请于", "请大家", "请各位", "务必", "截止", "记得在", "前提交", "前完成", "前填写", "前发"))
+        if CASUAL_IGNORE_RE.search(text) and not has_strong_cue:
             continue
 
         deadline_match = DEADLINE_RE.search(text)
@@ -117,7 +103,6 @@ def extract_action_items_and_decisions(messages: list) -> dict:
             verb = action_match.group(1)
             obj = action_match.group(2).strip()
             task_desc = verb + obj
-            # 排除已完成的过去时描述（如 "完成得很棒"）
             if any(p in task_desc for p in ("完成得很棒", "做得很好", "已搞定")):
                 is_action = False
             elif assignee or deadline != "未明确":
@@ -128,8 +113,8 @@ def extract_action_items_and_decisions(messages: list) -> dict:
 
         if is_action:
             assignee = assignee or "群内成员"
-            task_desc = re.sub(r'^[请于在把将]+\s*', '', task_desc)
-            act_sig = f"{assignee}_{deadline}_{task_desc[:12]}"
+            task_desc = re.sub(r'\s+', ' ', re.sub(r'^[请于在把将]+\s*', '', task_desc)).strip()
+            act_sig = f"{assignee}_{deadline}_{task_desc[:32]}"
             if act_sig not in seen_action_signatures:
                 seen_action_signatures.add(act_sig)
                 actions.append({

@@ -17,15 +17,47 @@
 
 读取内存只做 OpenProcess + ReadProcessMemory，不注入、不写内存；rkey 缓存 6 小时。
 """
-import argparse, os, re, sqlite3, sys, time, json, glob, hashlib
+import argparse, contextlib, os, re, sqlite3, sys, tempfile, time, json, glob, hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import (open_index, load_config, now_ts, fmt, local,
-                       gchat_image_url, sniff_ext, MEDIA, log, log_debug, set_log_level,
+from ntqq_core import (open_index, load_config, now_ts, gchat_image_url, sniff_ext,
+                       MEDIA, log, log_debug, log_warn, set_log_level,
                        load_rkey, save_rkey, db_image_url, qq_path)
 
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _safe_getsize(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return -1
+
+
+def _write_atomic_bytes(path, data):
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix='.tmp_', suffix='.part')
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _read_limited(resp, max_bytes=MAX_DOWNLOAD_BYTES):
+    data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ValueError('响应体超过 %d MB 上限' % (max_bytes // (1024 * 1024)))
+    return data
 
 
 def pic_root(cfg):
@@ -47,7 +79,7 @@ def build_local_index(root):
         if not c:
             return None
         t = [x for x in c if '_0.' in x]
-        return min(t or c, key=os.path.getsize)
+        return max(t or c, key=_safe_getsize)
     return pick
 
 
@@ -57,15 +89,13 @@ def fetch(md5, dst_dir, retries=2):
         try:
             req = urllib.request.Request(gchat_image_url(md5), headers=UA)
             with urllib.request.urlopen(req, timeout=25) as resp:
-                data = resp.read()
+                data = _read_limited(resp)
             ext = sniff_ext(data)
             if not ext:
                 return 'badformat', data[:8].hex()
             sub = os.path.join(dst_dir, md5[:2])
-            os.makedirs(sub, exist_ok=True)
             path = os.path.join(sub, md5 + ext)
-            with open(path, 'wb') as f:
-                f.write(data)
+            _write_atomic_bytes(path, data)
             return 'ok', path
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -85,10 +115,8 @@ def _save(data, dst_dir, md5):
     if not ext:
         return None
     sub = os.path.join(dst_dir, md5[:2])
-    os.makedirs(sub, exist_ok=True)
     path = os.path.join(sub, md5 + ext)
-    with open(path, 'wb') as f:
-        f.write(data)
+    _write_atomic_bytes(path, data)
     return path
 
 
@@ -105,12 +133,15 @@ def find_cached(dst_dir, md5):
 
 def fetch_db(host, path, rkey, md5, dst_dir, retries=1):
     """主力路径：多媒体 CDN 原图（spec=0）+ 内存 rkey，并校验 md5。"""
-    url = db_image_url(host, path, rkey)
+    try:
+        url = db_image_url(host, path, rkey)
+    except ValueError as e:
+        return 'badurl', str(e)[:80]
     for a in range(retries + 1):
         try:
             req = urllib.request.Request(url, headers=UA)
             with urllib.request.urlopen(req, timeout=25) as resp:
-                data = resp.read()
+                data = _read_limited(resp)
             if hashlib.md5(data).hexdigest() != md5.lower():
                 return 'mismatch', 'md5 不一致(%d 字节)' % len(data)
             p = _save(data, dst_dir, md5)
@@ -128,7 +159,7 @@ def fetch_db(host, path, rkey, md5, dst_dir, retries=1):
     return 'error', 'retries exhausted'
 
 
-def pick_rkey(samples):
+def pick_rkey(samples, max_candidates=30):
     """samples=[(host,path,md5)]；返回第一个能取到 md5 一致原图的 rkey，并写缓存。
 
     先试缓存里的，再扫内存；每个候选只拿前 2 张样本试，通不过就换下一个。
@@ -139,7 +170,7 @@ def pick_rkey(samples):
         cands.append(cached)
     try:
         from ntqq_key import scan_rkeys
-        cands += scan_rkeys()
+        cands += scan_rkeys(limit=max_candidates)
     except Exception as e:
         log('[media] 扫描 rkey 失败（QQ 没开？）: %s' % str(e)[:80])
     seen = set()
@@ -147,11 +178,21 @@ def pick_rkey(samples):
         if not r or r in seen:
             continue
         seen.add(r)
+        if len(seen) > max_candidates:
+            break
         for host, path, md5 in samples[:2]:
             try:
-                req = urllib.request.Request(db_image_url(host, path, r), headers=UA)
+                url = db_image_url(host, path, r)
+            except ValueError:
+                continue
+            try:
+                req = urllib.request.Request(url, headers=UA)
                 with urllib.request.urlopen(req, timeout=20) as resp:
-                    data = resp.read()
+                    data = _read_limited(resp)
+            except urllib.error.HTTPError as e:
+                if e.code in (400, 403):
+                    break  # 当前 rkey 鉴权失败，直接换下一个 rkey
+                continue   # 404 等单张失效继续试下一个样本
             except Exception:
                 continue
             if hashlib.md5(data).hexdigest() == md5.lower():
@@ -180,15 +221,15 @@ def main():
     cfg = load_config()
     out_root = cfg.get('media_cache_dir') or MEDIA
     os.makedirs(out_root, exist_ok=True)
-    idx = open_index(); idx.row_factory = sqlite3.Row
     cut = now_ts() - int(a.days * 86400)
-
-    if a.groups and a.groups != 'all':
-        want = [int(x) for x in a.groups.split(',')]
-        q = 'SELECT * FROM media WHERE ts>=? AND group_code IN (%s) ORDER BY ts DESC' % ','.join('?' * len(want))
-        rows = idx.execute(q, [cut] + want).fetchall()
-    else:
-        rows = idx.execute('SELECT * FROM media WHERE ts>=? ORDER BY ts DESC', (cut,)).fetchall()
+    with contextlib.closing(open_index()) as idx:
+        idx.row_factory = sqlite3.Row
+        want = [int(x.strip()) for x in (a.groups or '').split(',') if x.strip().isdigit()] if (a.groups and a.groups != 'all') else []
+        if a.groups and a.groups != 'all' and want:
+            q = 'SELECT * FROM media WHERE ts>=? AND group_code IN (%s) ORDER BY ts DESC' % ','.join('?' * len(want))
+            rows = idx.execute(q, [cut] + want).fetchall()
+        else:
+            rows = idx.execute('SELECT * FROM media WHERE ts>=? ORDER BY ts DESC', (cut,)).fetchall()
     seen = set()
     tasks = []
     for r in rows:
@@ -251,7 +292,11 @@ def main():
         futs = {ex.submit(work, r): r for r in tasks}
         done = 0
         for f in as_completed(futs):
-            r, st, val = f.result()
+            orig_r = futs[f]
+            try:
+                r, st, val = f.result()
+            except Exception as exc:
+                r, st, val = orig_r, 'error', str(exc)[:80]
             stats[st] = stats.get(st, 0) + 1
             manifest.append({'md5': r['md5'], 'status': st, 'path': val,
                              'ts': r['ts'], 'group_code': r['group_code'],
@@ -273,8 +318,8 @@ def main():
     if getattr(a, 'ocr', False):
         try:
             from ntqq_ocr import index_media_ocr
-            from ntqq_core import root_dir
-            db_path = os.path.join(root_dir(cfg), 'data', 'index.db')
+            import ntqq_core
+            db_path = ntqq_core.INDEX_DB
             ocr_count = index_media_ocr(db_path, out_root)
             log('[media] OCR 索引完成：新识别 %d 张图片' % ocr_count)
         except Exception as e:

@@ -12,9 +12,21 @@ import re
 from datetime import datetime
 
 
-def sanitize_filename(name: str) -> str:
-    """清理文件名中 Windows/Linux 系统的非法字符。"""
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' ._') or 'unnamed'
+_WIN_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def sanitize_filename(name: str, max_len: int = 120) -> str:
+    """清理文件名中 Windows/Linux 系统的非法字符、保留设备名与超长文件名。"""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(name or '')).strip(' ._')
+    if not cleaned:
+        cleaned = 'unnamed'
+    if cleaned.upper() in _WIN_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned[:max_len].rstrip(' ._') or 'unnamed'
 
 
 def sanitize_wikilink(text: str) -> str:
@@ -23,8 +35,13 @@ def sanitize_wikilink(text: str) -> str:
 
 
 def _yaml_escape(val: str) -> str:
-    """转义 YAML 单引号标量中的单引号。"""
-    return str(val).replace("'", "''")
+    """转义 YAML 单引号标量中的单引号并折叠换行符，防止 Frontmatter 注入。"""
+    return re.sub(r'[\r\n]+', ' ', str(val)).replace("'", "''")
+
+
+def _callout_lines(text: str, prefix: str = "> ") -> list[str]:
+    """将多行文本每行均加上 Obsidian Callout 前缀 `> `。"""
+    return [f"{prefix}{line}" for line in str(text or "").splitlines() or [""]]
 
 
 def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
@@ -73,7 +90,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     if summary or keywords:
         lines.append("> [!summary] 📋 今日要点速览")
         if summary:
-            lines.append(f"> {summary}")
+            lines.extend(_callout_lines(summary))
         if keywords:
             kw_links = " ".join(f"[[{sanitize_wikilink(kw)}]]" for kw in keywords if sanitize_wikilink(kw))
             lines.append(f"> \n> **相关主题标签**：{kw_links}")
@@ -85,7 +102,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
         for a in actions:
             raw_assignee = a.get("assignee") or "成员"
             assignee = sanitize_wikilink(raw_assignee) or "成员"
-            task = a.get("task") or ""
+            task = re.sub(r'\s+', ' ', str(a.get("task") or "")).strip()
             ddl = f" (⏳ 截止: {a['deadline']})" if a.get("deadline") and a["deadline"] != "未明确" else ""
             lines.append(f"> - [ ] [[{assignee}]] : {task}{ddl}")
         lines.append("")
@@ -96,7 +113,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
         for d in decisions:
             raw_ann = d.get("announcer") or "群公告"
             announcer = sanitize_wikilink(raw_ann) or "群公告"
-            dec = d.get("decision") or ""
+            dec = re.sub(r'\s+', ' ', str(d.get("decision") or "")).strip()
             lines.append(f"> - 🎯 **{dec}** (由 [[{announcer}]] 确认)")
         lines.append("")
 
@@ -106,7 +123,7 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
         for q in quotes:
             raw_spk = q.get("sender") or "群友"
             sender = sanitize_wikilink(raw_spk) or "群友"
-            text = q.get("text") or ""
+            text = re.sub(r'\s+', ' ', str(q.get("text") or "")).strip()
             lines.append(f"> - [[{sender}]] : \"{text}\"")
         lines.append("")
 
@@ -125,13 +142,16 @@ def generate_obsidian_markdown(data: dict, options: dict = None) -> str:
     if dialogues:
         lines.append("## 💬 代表性时段对话")
         lines.append("")
-        lines.append("```chat-qq")
+        chat_lines = []
         for d in dialogues:
-            sender = d.get("sender") or "未知"
+            sender = re.sub(r'[\r\n]+', ' ', str(d.get("sender") or "未知")).strip()
             t_str = f" ({d['time']})" if d.get("time") else ""
-            txt = (d.get("text") or "").replace("\n", " ")
-            lines.append(f"{sender}{t_str}: {txt}")
-        lines.append("```")
+            txt = re.sub(r'[\r\n]+', ' ', str(d.get("text") or ""))
+            chat_lines.append(f"{sender}{t_str}: {txt}")
+        fence = "````" if any("```" in cl for cl in chat_lines) else "```"
+        lines.append(f"{fence}chat-qq")
+        lines.extend(chat_lines)
+        lines.append(fence)
         lines.append("")
 
     return "\n".join(lines)
@@ -141,16 +161,19 @@ def export_to_obsidian(data: dict, output_dir: str, options: dict = None) -> str
     """
     将报告数据导出为 Obsidian Vault 笔记文件并返回写入的绝对路径。
     """
-    os.makedirs(output_dir, exist_ok=True)
-    date_str = data.get("date_str") or datetime.now().strftime("%Y-%m-%d")
-    group_id = str(data.get("group_id") or "0")
-    group_name = sanitize_filename(data.get("group_name") or f"群_{group_id}")
-    
+    abs_out = os.path.abspath(output_dir)
+    os.makedirs(abs_out, exist_ok=True)
+    date_str = sanitize_filename(data.get("date_str") or datetime.now().strftime("%Y-%m-%d"), max_len=32)
+    group_id = sanitize_filename(str(data.get("group_id") or "0"), max_len=32)
+    group_name = sanitize_filename(data.get("group_name") or f"群_{group_id}", max_len=80)
+
     filename = f"{date_str}-{group_name}-{group_id}.md"
-    file_path = os.path.join(output_dir, filename)
+    abs_file = os.path.abspath(os.path.join(abs_out, filename))
+    if os.path.commonpath([abs_out, abs_file]) != abs_out:
+        raise ValueError(f"非法导出文件路径: {abs_file}")
 
     content = generate_obsidian_markdown(data, options)
-    with open(file_path, "w", encoding="utf-8") as f:
+    with open(abs_file, "w", encoding="utf-8") as f:
         f.write(content)
 
-    return os.path.abspath(file_path)
+    return abs_file

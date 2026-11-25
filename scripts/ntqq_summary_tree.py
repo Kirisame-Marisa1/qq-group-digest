@@ -13,6 +13,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -24,8 +25,10 @@ if _CUR_DIR not in sys.path:
 
 from ntqq_segmenter import TopicCluster
 
+_URL_RE = re.compile(r'https?://[^\s<>"\'\])]+')
 
-def update_group_cursor(con: sqlite3.Connection, group_code: int, max_seq: int, max_ts: int) -> None:
+
+def update_group_cursor(con: sqlite3.Connection, group_code: int, max_seq: int, max_ts: int, commit: bool = True) -> None:
     """更新单个群的增量游标（强一致幂等更新）。"""
     now = int(time.time())
     con.execute("""
@@ -36,7 +39,8 @@ def update_group_cursor(con: sqlite3.Connection, group_code: int, max_seq: int, 
         last_msg_time = MAX(last_msg_time, excluded.last_msg_time),
         updated_at = excluded.updated_at
     """, (group_code, max_seq, max_ts, now))
-    con.commit()
+    if commit:
+        con.commit()
 
 
 def get_group_cursor(con: sqlite3.Connection, group_code: int) -> Tuple[int, int]:
@@ -56,7 +60,7 @@ def extract_cluster_title_and_summary(cluster: TopicCluster) -> Tuple[str, str, 
     if not msgs:
         return "闲聊话题", "无详细内容", []
 
-    texts = [m.get("text", "").strip() for m in msgs if m.get("text", "").strip()]
+    texts = [(m.get("text") or "").strip() for m in msgs if (m.get("text") or "").strip()]
     if not texts:
         return f"{cluster.first_sender} 发送的多媒体消息", "包含图片或文件分享", []
 
@@ -75,22 +79,26 @@ def extract_cluster_title_and_summary(cluster: TopicCluster) -> Tuple[str, str, 
     summary_lines = []
     sample_msgs = msgs[:2] + (msgs[-2:] if len(msgs) > 2 else [])
     for m in sample_msgs:
-        s_name = m.get("sender_name", "群友")
-        s_text = m.get("text", "").replace("\n", " ")
+        s_name = m.get("sender_name") or "群友"
+        s_text = (m.get("text") or "").replace("\n", " ")
         if len(s_text) > 40:
             s_text = s_text[:40] + "…"
         summary_lines.append(f"{s_name}: {s_text}")
     summary = "；".join(summary_lines)
 
-    # 3. 提取简单实体（如 @提及的人，URL，文件名等）
+    # 3. 提取真实 URL / 域名实体与参与者
     entities = []
+    seen_ent = set()
     for m in msgs:
-        t = m.get("text", "")
-        # 提取 URL
-        for u in ("http://", "https://", "bilibili.com", "github.com", "docs.qq.com"):
-            if u in t and u not in entities:
+        t = m.get("text") or ""
+        for u in _URL_RE.findall(t):
+            if u not in seen_ent:
+                seen_ent.add(u)
                 entities.append(u)
-    entities.extend(cluster.participants[:3])
+    for p in cluster.participants[:3]:
+        if p and p not in seen_ent:
+            seen_ent.add(p)
+            entities.append(p)
 
     return title, summary, entities
 
@@ -102,6 +110,7 @@ def build_and_save_micro_digests(con: sqlite3.Connection, clusters: List[TopicCl
 
     now = int(time.time())
     records = []
+    max_by_group: Dict[int, Tuple[int, int]] = {}
     for c in clusters:
         title, summary, entities = extract_cluster_title_and_summary(c)
         records.append((
@@ -118,6 +127,9 @@ def build_and_save_micro_digests(con: sqlite3.Connection, clusters: List[TopicCl
             c.message_count,
             now
         ))
+        if c.end_seq and c.end_ts:
+            prev_seq, prev_ts = max_by_group.get(c.group_code, (0, 0))
+            max_by_group[c.group_code] = (max(prev_seq, c.end_seq), max(prev_ts, c.end_ts))
 
     con.executemany("""
     INSERT OR REPLACE INTO micro_digests (
@@ -126,38 +138,46 @@ def build_and_save_micro_digests(con: sqlite3.Connection, clusters: List[TopicCl
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, records)
 
-    # 同步推进每个群的增量游标
-    for c in clusters:
-        if c.end_seq and c.end_ts:
-            update_group_cursor(con, c.group_code, c.end_seq, c.end_ts)
+    # 每群聚合一次更新游标，避免 N+1 提交
+    for gc, (mseq, mts) in max_by_group.items():
+        update_group_cursor(con, gc, mseq, mts, commit=False)
 
     con.commit()
     return len(records)
 
 
 def load_micro_digests(con: sqlite3.Connection, group_code: int, since_ts: int = 0) -> List[Dict[str, Any]]:
-    """查询指定群在时间窗口内的微摘要列表。"""
-    con.row_factory = sqlite3.Row
+    """查询指定群在时间窗口内的微摘要列表（不修改调用方连接的 row_factory）。"""
     cur = con.execute("""
-    SELECT * FROM micro_digests
+    SELECT cluster_id, group_code, start_seq, end_seq, start_ts, end_ts,
+           title, summary, entities, participants, msg_count
+    FROM micro_digests
     WHERE group_code=? AND start_ts>=?
     ORDER BY start_ts DESC
     """, (group_code, since_ts))
     rows = cur.fetchall()
     results = []
     for r in rows:
+        if hasattr(r, "keys"):
+            cid, gc, sseq, eseq, sts, ets, title, summary, ent, part, mcnt = (
+                r["cluster_id"], r["group_code"], r["start_seq"], r["end_seq"],
+                r["start_ts"], r["end_ts"], r["title"], r["summary"],
+                r["entities"], r["participants"], r["msg_count"]
+            )
+        else:
+            cid, gc, sseq, eseq, sts, ets, title, summary, ent, part, mcnt = r[:11]
         results.append({
-            "cluster_id": r["cluster_id"],
-            "group_code": r["group_code"],
-            "start_seq": r["start_seq"],
-            "end_seq": r["end_seq"],
-            "start_ts": r["start_ts"],
-            "end_ts": r["end_ts"],
-            "title": r["title"],
-            "summary": r["summary"],
-            "entities": json.loads(r["entities"]) if r["entities"] else [],
-            "participants": json.loads(r["participants"]) if r["participants"] else [],
-            "msg_count": r["msg_count"],
+            "cluster_id": cid,
+            "group_code": gc,
+            "start_seq": sseq,
+            "end_seq": eseq,
+            "start_ts": sts,
+            "end_ts": ets,
+            "title": title,
+            "summary": summary,
+            "entities": json.loads(ent) if ent else [],
+            "participants": json.loads(part) if part else [],
+            "msg_count": mcnt,
         })
     return results
 

@@ -13,15 +13,15 @@ nt_qq 下六万多个文件搜关键词零命中），做不成自动识别，**
   group_snapshot.json  每次扫描的现状快照（便于人工核对与回滚）
 """
 import argparse
+import contextlib
 import json
 import os
 import sqlite3
 import sys
 import time
-from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ntqq_core import PLAIN, RUN, TZ, ensure_dirs, load_schema, open_ro, log, fmt  # noqa: E402
+from ntqq_core import INDEX_DB, PLAIN, RUN, atomic_write_json, ensure_dirs, load_schema, open_ro, log, fmt, validate_sql_ident  # noqa: E402
 
 REGISTRY = os.path.join(RUN, 'group_registry.json')
 SNAPSHOT = os.path.join(RUN, 'group_snapshot.json')
@@ -35,51 +35,51 @@ def read_live_groups():
     sc = load_schema()
     ns = sc['name_sources']['group_list']
     gl = sc['name_sources']['group_detail']
-    con = open_ro(p)
     live = {}
-    try:
-        sql = 'SELECT "%s","%s" FROM "%s"' % (ns['code'], ns['name'], ns['table'])
-        for code, name in con.execute(sql):
-            if not code:
-                continue
-            live[int(code)] = {'name': (name or '').strip(),
-                               'in_member_list': True, 'in_detail': False,
-                               'last_msg_ts': 0, 'msgs_30d': 0}
-    except sqlite3.DatabaseError as e:
-        log('[warn] 读 group_list 失败: %s' % e)
-    try:
-        sql = 'SELECT "%s","%s" FROM "%s"' % (gl['code'], gl['name'], gl['table'])
-        for code, name in con.execute(sql):
-            if not code:
-                continue
-            c = int(code)
-            if c in live:
-                live[c]['in_detail'] = True
-                if not live[c]['name'] and name:
-                    live[c]['name'] = str(name).strip()
-            else:
-                # 只在 detail 表里、不在 group_list：历史群（多半已退）
-                live[c] = {'name': (name or '').strip(), 'in_member_list': False,
-                           'in_detail': True, 'last_msg_ts': 0, 'msgs_30d': 0}
-    except sqlite3.DatabaseError as e:
-        log('[warn] 读 group_detail_info_ver1 失败: %s' % e)
-    con.close()
+    with contextlib.closing(open_ro(p)) as con:
+        try:
+            sql = 'SELECT "%s","%s" FROM "%s"' % (
+                validate_sql_ident(ns['code']), validate_sql_ident(ns['name']), validate_sql_ident(ns['table']))
+            for code, name in con.execute(sql):
+                if not code:
+                    continue
+                live[int(code)] = {'name': (name or '').strip(),
+                                   'in_member_list': True, 'in_detail': False,
+                                   'last_msg_ts': 0, 'msgs_30d': 0}
+        except (sqlite3.DatabaseError, ValueError, TypeError) as e:
+            log('[warn] 读 group_list 失败: %s' % e)
+        try:
+            sql = 'SELECT "%s","%s" FROM "%s"' % (
+                validate_sql_ident(gl['code']), validate_sql_ident(gl['name']), validate_sql_ident(gl['table']))
+            for code, name in con.execute(sql):
+                if not code:
+                    continue
+                c = int(code)
+                if c in live:
+                    live[c]['in_detail'] = True
+                    if not live[c]['name'] and name:
+                        live[c]['name'] = str(name).strip()
+                else:
+                    # 只在 detail 表里、不在 group_list：历史群（多半已退）
+                    live[c] = {'name': (name or '').strip(), 'in_member_list': False,
+                               'in_detail': True, 'last_msg_ts': 0, 'msgs_30d': 0}
+        except (sqlite3.DatabaseError, ValueError, TypeError) as e:
+            log('[warn] 读 group_detail_info_ver1 失败: %s' % e)
     return live
 
 
 def attach_activity(live, window_days=30):
     """从滚动索引补「最后一条消息时间 / 窗口内条数」。索引不存在则跳过。"""
-    idxp = os.path.join(os.path.dirname(PLAIN), 'index.db')
+    idxp = INDEX_DB if os.path.exists(INDEX_DB) else os.path.join(os.path.dirname(PLAIN), 'index.db')
     if not os.path.exists(idxp) or live is None:
         return live
     try:
-        con = open_ro(idxp)
-        for code, n, last in con.execute('SELECT group_code, n, last_ts FROM groups'):
-            c = int(code)
-            if c in live:
-                live[c]['msgs_30d'] = int(n or 0)
-                live[c]['last_msg_ts'] = int(last or 0)
-        con.close()
+        with contextlib.closing(open_ro(idxp)) as con:
+            for code, n, last in con.execute('SELECT group_code, n, last_ts FROM groups'):
+                c = int(code)
+                if c in live:
+                    live[c]['msgs_30d'] = int(n or 0)
+                    live[c]['last_msg_ts'] = int(last or 0)
     except sqlite3.DatabaseError as e:
         log('[warn] 读索引补活动度失败: %s' % e)
     return live
@@ -187,8 +187,7 @@ def scan(persist=True, window_days=30):
                 'in_group': sum(1 for r in R.values() if r.get('in_member_list')),
                 'groups': {str(c): v for c, v in sorted(live.items())}}
         try:
-            with open(SNAPSHOT, 'w', encoding='utf-8') as fh:
-                json.dump(snap, fh, ensure_ascii=False, indent=2)
+            atomic_write_json(SNAPSHOT, snap, indent=2)
         except OSError as e:
             log('[warn] 写快照失败: %s' % e)
     return res

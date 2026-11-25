@@ -3,6 +3,9 @@ param(
     [string]$ImagePath
 )
 
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 try {
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
     $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.IsGenericMethod })[0]
@@ -16,8 +19,9 @@ try {
     [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
     [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime] | Out-Null
     [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime] | Out-Null
 
-    $resolvedPath = (Resolve-Path $ImagePath).Path
+    $resolvedPath = (Resolve-Path -LiteralPath $ImagePath).Path
     $file = Await-Task ([Windows.Storage.StorageFile]::GetFileFromPathAsync($resolvedPath)) ([Windows.Storage.StorageFile])
     $stream = Await-Task ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
     $decoder = Await-Task ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])

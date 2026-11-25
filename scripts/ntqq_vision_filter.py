@@ -9,6 +9,7 @@
 3. 为后续 L3 本地 OCR / 按需 VLM 调用提供轻量预筛底座。
 """
 
+import contextlib
 import io
 import os
 import sqlite3
@@ -96,7 +97,7 @@ class ImageFilterPipeline:
         if not self.db_path:
             return
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
-        with sqlite3.connect(self.db_path) as con:
+        with contextlib.closing(sqlite3.connect(self.db_path)) as con:
             con.execute("""
             CREATE TABLE IF NOT EXISTS sticker_blacklist (
                 dhash TEXT PRIMARY KEY,
@@ -116,7 +117,7 @@ class ImageFilterPipeline:
 
         now = int(time.time())
         is_blocked = False
-        with sqlite3.connect(self.db_path) as con:
+        with contextlib.closing(sqlite3.connect(self.db_path)) as con:
             cur = con.execute("SELECT count, is_blacklisted FROM sticker_blacklist WHERE dhash=?", (dhash,))
             row = cur.fetchone()
             if row:
@@ -174,23 +175,20 @@ class ImageFilterPipeline:
 
         # 3. 尺寸与分辨率过滤 (L1) + dHash 计算 (L2)
         try:
-            if isinstance(target, bytes):
-                img = Image.open(io.BytesIO(target))
-            else:
-                img = Image.open(target)
+            src_ctx = Image.open(io.BytesIO(target)) if isinstance(target, bytes) else Image.open(target)
+            with src_ctx as img:
+                width, height = img.size
+                if width < self.min_dimension or height < self.min_dimension:
+                    return ImageFilterResult(
+                        decision=FilterTier.L1_METADATA_DISCARD,
+                        reason=f"分辨率极低 ({width}x{height} < {self.min_dimension}x{self.min_dimension})",
+                        width=width,
+                        height=height,
+                        filesize=size
+                    )
 
-            width, height = img.size
-            if width < self.min_dimension or height < self.min_dimension:
-                return ImageFilterResult(
-                    decision=FilterTier.L1_METADATA_DISCARD,
-                    reason=f"分辨率极低 ({width}x{height} < {self.min_dimension}x{self.min_dimension})",
-                    width=width,
-                    height=height,
-                    filesize=size
-                )
-
-            # 计算 dHash
-            h = compute_dhash(img)
+                # 计算 dHash
+                h = compute_dhash(img)
 
             # L2 黑名单检查
             is_blacklisted = self.record_and_check_blacklist(h, md5=md5)

@@ -15,6 +15,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 TZ = timezone(timedelta(hours=8))
+_EPOCH_TZ = datetime(1970, 1, 1, tzinfo=timezone.utc).astimezone(TZ)
 
 
 @dataclass
@@ -35,7 +36,7 @@ class TopicCluster:
 
     def format_anchor(self) -> str:
         """生成格式化溯源锚点：[Ref: #seq_start - #seq_end, HH:MM @User]"""
-        dt = datetime.fromtimestamp(self.start_ts, TZ)
+        dt = _EPOCH_TZ + timedelta(seconds=float(self.start_ts or 0))
         time_str = dt.strftime("%H:%M")
         user_str = self.first_sender or "群友"
         if self.start_seq and self.end_seq and self.start_seq != self.end_seq:
@@ -57,49 +58,56 @@ class ConversationSegmenter:
         self.max_cluster_size = max_cluster_size
 
     def _normalize_msg(self, m: Union[Dict[str, Any], Tuple, Any]) -> Dict[str, Any]:
-        """将不同输入形式归一化为通用字典。"""
-        if isinstance(m, dict):
+        """将不同输入形式（dict、sqlite3.Row、对象、16 元组）归一化为通用字典。"""
+        if isinstance(m, dict) or hasattr(m, "keys"):
+            if isinstance(m, dict):
+                g = lambda k, d=None: m[k] if m.get(k) is not None else d
+            else:
+                keys = set(m.keys())
+                g = lambda k, d=None: m[k] if (k in keys and m[k] is not None) else d
+            sqq = g("sender_qq", 0)
             return {
-                "msg_id": m.get("msg_id", 0),
-                "seq": m.get("seq", 0),
-                "ts": m.get("ts", 0),
-                "group_code": m.get("group_code", 0),
-                "group_name": m.get("group_name", ""),
-                "sender_name": m.get("sender_name", "") or f"QQ{m.get('sender_qq', '')}",
-                "sender_uid": m.get("sender_uid", ""),
-                "sender_qq": m.get("sender_qq", 0),
-                "kind": m.get("kind", "text"),
-                "text": m.get("text", ""),
-                "reply_seq": m.get("reply_seq", 0),
+                "msg_id": g("msg_id", 0),
+                "seq": g("seq", 0),
+                "ts": g("ts", 0),
+                "group_code": g("group_code", 0),
+                "group_name": g("group_name", ""),
+                "sender_name": g("sender_name", "") or (f"QQ{sqq}" if sqq else ""),
+                "sender_uid": g("sender_uid", ""),
+                "sender_qq": sqq,
+                "kind": g("kind", "text"),
+                "text": g("text", "") or "",
+                "reply_seq": g("reply_seq", 0),
             }
         elif hasattr(m, "msg_id"):
+            sqq = getattr(m, "sender_qq", 0) or 0
             return {
-                "msg_id": getattr(m, "msg_id", 0),
-                "seq": getattr(m, "seq", 0),
-                "ts": getattr(m, "ts", 0),
-                "group_code": getattr(m, "group_code", 0),
-                "group_name": getattr(m, "group_name", ""),
-                "sender_name": getattr(m, "sender_name", "") or f"QQ{getattr(m, 'sender_qq', '')}",
-                "sender_uid": getattr(m, "sender_uid", ""),
-                "sender_qq": getattr(m, "sender_qq", 0),
-                "kind": getattr(m, "kind", "text"),
-                "text": getattr(m, "text", ""),
-                "reply_seq": getattr(m, "reply_seq", 0),
+                "msg_id": getattr(m, "msg_id", 0) or 0,
+                "seq": getattr(m, "seq", 0) or 0,
+                "ts": getattr(m, "ts", 0) or 0,
+                "group_code": getattr(m, "group_code", 0) or 0,
+                "group_name": getattr(m, "group_name", "") or "",
+                "sender_name": getattr(m, "sender_name", "") or (f"QQ{sqq}" if sqq else ""),
+                "sender_uid": getattr(m, "sender_uid", "") or "",
+                "sender_qq": sqq,
+                "kind": getattr(m, "kind", "text") or "text",
+                "text": getattr(m, "text", "") or "",
+                "reply_seq": getattr(m, "reply_seq", 0) or 0,
             }
         elif isinstance(m, (tuple, list)):
             # 兼容 (msg_id, ts, day, hour, g_code, g_name, uid, sqq, name, direction, msg_type, subtype, kind, text, reply_seq, seq)
             return {
                 "msg_id": m[0],
-                "ts": m[1],
-                "group_code": m[4],
-                "group_name": m[5],
-                "sender_uid": m[6],
-                "sender_qq": m[7],
+                "ts": m[1] or 0,
+                "group_code": m[4] or 0,
+                "group_name": m[5] or "",
+                "sender_uid": m[6] or "",
+                "sender_qq": m[7] or 0,
                 "sender_name": m[8] or f"QQ{m[7]}",
-                "kind": m[12],
-                "text": m[13],
-                "reply_seq": m[14],
-                "seq": m[15] if len(m) > 15 else 0,
+                "kind": m[12] or "text",
+                "text": m[13] or "",
+                "reply_seq": m[14] or 0,
+                "seq": (m[15] or 0) if len(m) > 15 else 0,
             }
         return {}
 
