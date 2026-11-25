@@ -5,13 +5,17 @@ Decouples configuration persistence, process execution, QQ process detection,
 and SQLite reporting from the Tkinter UI layer for headless automated testing.
 """
 
+import contextlib
 import json
 import os
+import pathlib
 import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
+import webbrowser
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -61,43 +65,79 @@ class QQGuiService:
 
     @staticmethod
     def load_config(config_path: str = CONFIG_PATH) -> Dict[str, Any]:
-        """Load and return configuration dict, handling encoding gracefully."""
+        """Load and return configuration dict, handling encoding and malformed JSON gracefully."""
         if not os.path.exists(config_path):
             return {}
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except UnicodeDecodeError:
-            with open(config_path, "r", encoding="gbk") as f:
-                return json.load(f)
+        for enc in ("utf-8", "gbk"):
+            try:
+                with open(config_path, "r", encoding=enc) as f:
+                    data = json.load(f)
+                return data if isinstance(data, dict) else {}
+            except UnicodeDecodeError:
+                continue
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
 
     @staticmethod
     def save_config(config_data: Dict[str, Any], config_path: str = CONFIG_PATH) -> bool:
-        """Save configuration dictionary into json file with fallback merge."""
+        """Atomically save configuration dictionary into json file with fallback merge."""
         existing = QQGuiService.load_config(config_path)
         merged = {**existing, **config_data}
-        os.makedirs(os.path.dirname(os.path.abspath(config_path)), exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=2, ensure_ascii=False)
+        parent = os.path.dirname(os.path.abspath(config_path))
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".cfg_", suffix=".tmp", dir=parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(merged, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
         return True
 
     @staticmethod
     def discover_qq_base_dirs() -> List[str]:
-        """Discover potential Tencent Files base directories."""
+        """Discover potential Tencent Files base directories via UserDataInfo.ini and standard paths."""
         candidates = []
+        seen = set()
+
+        def _add(p: str) -> None:
+            if not p:
+                return
+            norm = os.path.normcase(os.path.abspath(p))
+            if norm not in seen and os.path.isdir(p):
+                seen.add(norm)
+                candidates.append(p)
+
+        ini = r"C:\Users\Public\Documents\Tencent\QQ\UserDataInfo.ini"
+        if os.path.isfile(ini):
+            try:
+                with open(ini, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+                m = re.search(r"^UserDataSavePath\s*=\s*(.+)$", text, re.M)
+                if m:
+                    _add(m.group(1).strip())
+            except OSError:
+                pass
+
         userprofile = os.environ.get("USERPROFILE", "")
         if userprofile:
-            docs = os.path.join(userprofile, "Documents", "Tencent Files")
-            if os.path.isdir(docs):
-                candidates.append(docs)
+            _add(os.path.join(userprofile, "Documents", "Tencent Files"))
+        _add(os.path.expanduser(os.path.join("~", "Documents", "Tencent Files")))
+
         for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
             root = f"{letter}:/"
             if not os.path.exists(root):
                 continue
-            for sub in ("Tencent Files", "QQNT/Tencent Files"):
-                cand = os.path.join(root, sub)
-                if os.path.isdir(cand) and cand not in candidates:
-                    candidates.append(cand)
+            for sub in ("Tencent Files", "QQNT/Tencent Files", "ntqq/Tencent Files", "QQ/Tencent Files"):
+                _add(os.path.join(root, sub))
         return candidates
 
     @staticmethod
@@ -131,15 +171,17 @@ class QQGuiService:
         pe = PROCESSENTRY32()
         pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
         qq_pid = None
-        if ctypes.windll.kernel32.Process32First(snap, ctypes.byref(pe)):
-            while True:
-                exe_name = pe.szExeFile.decode('utf-8', 'replace').lower()
-                if exe_name == 'qq.exe':
-                    qq_pid = pe.th32ProcessID
-                    break
-                if not ctypes.windll.kernel32.Process32Next(snap, ctypes.byref(pe)):
-                    break
-        ctypes.windll.kernel32.CloseHandle(snap)
+        try:
+            if ctypes.windll.kernel32.Process32First(snap, ctypes.byref(pe)):
+                while True:
+                    exe_name = pe.szExeFile.decode('utf-8', 'replace').lower()
+                    if exe_name == 'qq.exe':
+                        qq_pid = pe.th32ProcessID
+                        break
+                    if not ctypes.windll.kernel32.Process32Next(snap, ctypes.byref(pe)):
+                        break
+        finally:
+            ctypes.windll.kernel32.CloseHandle(snap)
 
         if not qq_pid:
             return None
@@ -155,6 +197,59 @@ class QQGuiService:
             return "QQ.exe"
         finally:
             ctypes.windll.kernel32.CloseHandle(h_proc)
+
+    @staticmethod
+    def is_qq_running() -> bool:
+        """Check whether QQ.exe is currently running (psutil with ctypes fallback)."""
+        if _HAS_PSUTIL and psutil is not None:
+            for proc in psutil.process_iter(["name"]):
+                try:
+                    name = proc.info.get("name")
+                    if name and name.lower() == "qq.exe":
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            return False
+        return QQGuiService._detect_qq_exe_ctypes() is not None
+
+    @staticmethod
+    def terminate_process_tree(pid: int) -> None:
+        """Terminate a spawned subprocess and its child processes without touching QQ."""
+        if _HAS_PSUTIL and psutil is not None:
+            parent = psutil.Process(pid)
+            for child in parent.children(recursive=True):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            try:
+                parent.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            return
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+                capture_output=True,
+                check=False,
+                **QQGuiService.get_subprocess_kwargs(),
+            )
+        else:
+            import signal
+            os.kill(int(pid), signal.SIGKILL)
+
+    @staticmethod
+    def open_path(path: str) -> None:
+        """Open a local file or directory using the OS native handler or browser fallback."""
+        norm_target = os.path.normpath(path)
+        if hasattr(os, "startfile"):
+            os.startfile(norm_target)
+            return
+        if os.path.isdir(norm_target):
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            subprocess.Popen([opener, norm_target])
+            return
+        webbrowser.open(pathlib.Path(os.path.abspath(norm_target)).as_uri())
 
     @staticmethod
     def detect_running_qq() -> Tuple[Optional[str], List[Tuple[float, str, str]]]:
@@ -184,7 +279,7 @@ class QQGuiService:
                 try:
                     for f in os.listdir(base_dir):
                         full = os.path.join(base_dir, f)
-                        if os.path.isdir(full) and re.match(r"^\d+$", f):
+                        if os.path.isdir(full) and re.match(r"^\d{5,}$", f):
                             msg_db = os.path.join(full, "nt_qq", "nt_db", "nt_msg.db")
                             wal_db = msg_db + "-wal"
                             if os.path.isfile(wal_db):
@@ -205,15 +300,13 @@ class QQGuiService:
         """Query statistics from local digested SQLite database without Tkinter."""
         if not os.path.exists(db_path):
             return None
-        con = sqlite3.connect(db_path)
-        cur = con.cursor()
-        try:
+        with contextlib.closing(sqlite3.connect(db_path)) as con:
+            cur = con.cursor()
             cur.execute("SELECT COUNT(*) FROM messages")
             total_msgs = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM groups")
             total_groups = cur.fetchone()[0]
             if total_msgs == 0:
-                con.close()
                 return {"total_msgs": 0, "total_groups": total_groups}
 
             cur.execute("SELECT MIN(day), MAX(day) FROM messages")
@@ -235,7 +328,6 @@ class QQGuiService:
             )
             kind_stats = cur.fetchall()
 
-            con.close()
             return {
                 "total_msgs": total_msgs,
                 "total_groups": total_groups,
@@ -246,9 +338,16 @@ class QQGuiService:
                 "top_groups": top_groups,
                 "kind_stats": kind_stats,
             }
-        except Exception:
-            con.close()
-            raise
+
+    @staticmethod
+    def _format_built_at(val: Any) -> str:
+        s = str(val or "-")
+        if re.match(r"^\d+(\.\d+)?$", s):
+            try:
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(s)))
+            except (ValueError, OSError, OverflowError):
+                return s
+        return s
 
     @staticmethod
     def format_database_summary(stats: Dict[str, Any]) -> str:
@@ -270,7 +369,7 @@ class QQGuiService:
             stats["total_groups"],
             stats.get("min_day", "-"),
             stats.get("max_day", "-"),
-            stats.get("built_at", "-"),
+            QQGuiService._format_built_at(stats.get("built_at", "-")),
             stats.get("window_days", "-"),
         )
         for g, c in stats.get("top_groups", []):

@@ -7,15 +7,16 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
-for _p in (_PARENT, _HERE):
+for _p in (_HERE, _PARENT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 try:
-    from gui_app import main
+    from gui.app import main
 except ImportError:
     from gui import QQToolGUI
-    def main():
+
+    def main() -> None:
         app = QQToolGUI()
         app.mainloop()
 

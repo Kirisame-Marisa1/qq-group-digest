@@ -3,8 +3,6 @@
 
 import os
 import re
-import subprocess
-import tkinter as tk
 from tkinter import messagebox
 import customtkinter as ctk
 
@@ -13,34 +11,25 @@ from gui.themes import (
     CLAUDE_CARD,
     CLAUDE_CARD_WARM,
     CLAUDE_BORDER,
-    CLAUDE_BORDER_SUBTLE,
     CLAUDE_TEXT,
     CLAUDE_TEXT_SUB,
     CLAUDE_TEXT_MUTED,
     CLAUDE_TERRACOTTA,
     CLAUDE_TERRACOTTA_HOVER,
     CLAUDE_TERRACOTTA_SOFT,
-    CLAUDE_BLUE,
-    CLAUDE_BLUE_HOVER,
-    CLAUDE_GREEN,
-    CLAUDE_GREEN_HOVER,
     CLAUDE_MUTED_BTN,
     CLAUDE_MUTED_HOVER,
     MONET_BG,
     MONET_CARD,
     MONET_CARD_WARM,
     MONET_BORDER,
-    MONET_BORDER_SUBTLE,
     MONET_INK,
     MONET_INK_SOFT,
-    MONET_FOG,
     MONET_LOTUS,
     MONET_LOTUS_HOVER,
-    MONET_LOTUS_SOFT,
-    MONET_SILVER_BTN,
-    MONET_SILVER_HOVER,
     MONET_SILVER_LIGHT,
 )
+from gui.service import QQGuiService
 
 
 class ClaudeReaderWindow(ctk.CTkToplevel):
@@ -404,6 +393,7 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         except Exception as e:
             self.reading_title.configure(text="读取简报出错")
             self.reading_box.configure(state="normal")
+            self.reading_box.delete("1.0", "end")
             self.reading_box.insert("1.0", f"读取出错: {e}")
             self.reading_box.configure(state="disabled")
 
@@ -415,12 +405,28 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         cur_group = None
         cur_lines = []
 
-        grp_re = re.compile(r"^##\s+(?:(\d+)\.\s+)?(.+?)(?:\s+\((\d+)\))?$")
+        non_group_prefixes = (
+            "重点速览",
+            "重点通知",
+            "全群总览",
+            "KPI",
+            "概览",
+            "提问:",
+            "关键词:",
+            "待办事项",
+            "群聊社交互动",
+            "🔗",
+            "📦",
+            "📌",
+            "🕸",
+            "📊",
+        )
+        grp_re = re.compile(r"^##\s+(?:(\d+)\.\s+)?(.+?)(?:\s+\(([^)]+)\))?$")
         for line in lines:
             m = grp_re.match(line.strip())
             if m:
                 name = m.group(2).strip()
-                if any(k in name for k in ["重点速览", "重点通知", "全群总览", "KPI", "概览"]):
+                if any(k in name for k in non_group_prefixes):
                     if cur_group:
                         cur_lines.append(line)
                     else:
@@ -433,7 +439,7 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
                 cur_group = {
                     "idx": idx,
                     "name": name,
-                    "code": m.group(3) or "",
+                    "code": (m.group(3) or "").strip(),
                     "title": line,
                 }
                 cur_lines = [line]
@@ -505,7 +511,8 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         self.reading_box.configure(state="normal")
         self.reading_box.delete("1.0", "end")
 
-        if idx == -1:
+        if idx == -1 or not (0 <= idx < len(self.groups)):
+            self.active_group_idx = -1
             self.reading_title.configure(text="QQ 群聊每日观察 · 全群总览")
             self.reading_sub.configure(text=f"覆盖 {len(self.groups)} 个群组")
             display_text = self.preamble_text if self.preamble_text else self.full_markdown
@@ -519,10 +526,10 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         self.reading_box.configure(state="disabled")
 
     def copy_current_text(self):
-        if self.active_group_idx == -1:
-            t = self.full_markdown
-        else:
+        if 0 <= self.active_group_idx < len(self.groups):
             t = self.groups[self.active_group_idx]["text"]
+        else:
+            t = self.full_markdown
         self.clipboard_clear()
         self.clipboard_append(t)
         messagebox.showinfo("提示", "已复制到剪贴板！")
@@ -538,7 +545,7 @@ class ClaudeReaderWindow(ctk.CTkToplevel):
         out_dir = self.parent.output_entry.get()
         if os.path.isdir(out_dir):
             try:
-                os.startfile(os.path.normpath(out_dir))
+                QQGuiService.open_path(out_dir)
             except Exception as e:
                 messagebox.showwarning("打开失败", f"无法打开目录: {e}")
 

@@ -15,17 +15,18 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 
 def _pick(*paths):
-    for p in paths:
-        if p and os.path.exists(p):
+    non_empty = [p for p in paths if p]
+    for p in non_empty:
+        if os.path.exists(p):
             return p
-    return paths[-1]
+    return non_empty[0] if non_empty else ""
 
 
 SCRIPTS_DIR = _pick(
     os.path.join(APP_DIR, "scripts"),
     os.path.join(BUNDLE_DIR, "scripts") if BUNDLE_DIR else None,
 )
-DEFAULT_WORKSPACE = "E:/QQChatCache"
+DEFAULT_WORKSPACE = "D:/QQChatCache"
 
 STAGE_LABELS = {
     "key": "提取密钥",

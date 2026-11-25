@@ -1,53 +1,31 @@
 # -*- coding: utf-8 -*-
 """Main application window for qq-group-digest GUI."""
 
-import json
 import os
 import re
 import subprocess
 import threading
 import sys
-import time
-import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from gui.themes import (
     CLAUDE_BG,
     CLAUDE_CARD,
-    CLAUDE_CARD_WARM,
     CLAUDE_BORDER,
-    CLAUDE_BORDER_SUBTLE,
     CLAUDE_TEXT,
     CLAUDE_TEXT_SUB,
-    CLAUDE_TEXT_MUTED,
     CLAUDE_TERRACOTTA,
     CLAUDE_TERRACOTTA_HOVER,
-    CLAUDE_TERRACOTTA_SOFT,
     CLAUDE_BLUE,
     CLAUDE_BLUE_HOVER,
     CLAUDE_GREEN,
     CLAUDE_GREEN_HOVER,
     CLAUDE_MUTED_BTN,
     CLAUDE_MUTED_HOVER,
-    MONET_BG,
-    MONET_CARD,
-    MONET_CARD_WARM,
-    MONET_BORDER,
-    MONET_BORDER_SUBTLE,
-    MONET_INK,
-    MONET_INK_SOFT,
-    MONET_FOG,
-    MONET_LOTUS,
-    MONET_LOTUS_HOVER,
-    MONET_LOTUS_SOFT,
-    MONET_SILVER_BTN,
-    MONET_SILVER_HOVER,
-    MONET_SILVER_LIGHT,
     STAGE_LABELS,
     DEFAULT_WORKSPACE,
     FROZEN,
-    BUNDLE_DIR,
     APP_DIR,
     CONFIG_PATH,
     SCRIPTS_DIR,
@@ -68,6 +46,7 @@ class QQToolGUI(ctk.CTk):
         y = (self.winfo_screenheight() - 920) // 2
         self.geometry(f"+{x}+{y}")
 
+        self._state_lock = threading.Lock()
         self.current_process = None
         self.busy = False
         self.last_html_path = None
@@ -544,48 +523,16 @@ class QQToolGUI(ctk.CTk):
             entry_widget.insert(0, path.replace("\\", "/"))
 
     def qq_running(self):
-        for proc in psutil.process_iter(["name"]):
-            if proc.info["name"] and proc.info["name"].lower() == "qq.exe":
-                return True
-        return False
+        return QQGuiService.is_qq_running()
 
     @staticmethod
     def _discover_qq_base_dirs():
-        """Discover candidate Tencent Files directories via UserDataInfo.ini + standard paths."""
-        candidates = []
-        ini = r"C:\Users\Public\Documents\Tencent\QQ\UserDataInfo.ini"
-        if os.path.isfile(ini):
-            try:
-                with open(ini, "r", encoding="utf-8", errors="ignore") as f:
-                    text = f.read()
-                m = re.search(r"^UserDataSavePath\s*=\s*(.+)$", text, re.M)
-                if m:
-                    p = m.group(1).strip()
-                    if p and os.path.isdir(p):
-                        candidates.append(p)
-            except Exception:
-                pass
-        doc_tf = os.path.expanduser("~\\Documents\\Tencent Files")
-        if os.path.isdir(doc_tf) and doc_tf not in candidates:
-            candidates.append(doc_tf)
-        for drv in "CDEFG":
-            for sub in ("Tencent Files", "QQNT\\Tencent Files", "ntqq\\Tencent Files", "QQ\\Tencent Files"):
-                p = f"{drv}:\\{sub}"
-                if os.path.isdir(p) and p not in candidates:
-                    candidates.append(p)
-        return candidates
+        """Discover candidate Tencent Files directories via QQGuiService."""
+        return QQGuiService.discover_qq_base_dirs()
 
     def auto_detect_qq(self):
         self.log("🔍 正在检测运行中的 QQ...")
-        qq_exe = None
-        for proc in psutil.process_iter(["name", "exe"]):
-            if (
-                proc.info["name"]
-                and proc.info["name"].lower() == "qq.exe"
-                and proc.info["exe"]
-            ):
-                qq_exe = proc.info["exe"]
-                break
+        qq_exe, matched_candidates = QQGuiService.detect_running_qq()
         if not qq_exe:
             messagebox.showwarning("提示", "未检测到正在运行的 QQ，请先登录 QQ！")
             self.log("❌ 未检测到 QQ 进程。")
@@ -594,28 +541,8 @@ class QQToolGUI(ctk.CTk):
         self.exe_entry.insert(0, qq_exe.replace("\\", "/"))
         self.log(f"✅ 找到 QQ.exe: {qq_exe}")
 
-        base_dirs = self._discover_qq_base_dirs()
-        matched_Candidates = []  # (mtime, qq, data_dir)
-        for base_dir in base_dirs:
-            try:
-                for f in os.listdir(base_dir):
-                    full = os.path.join(base_dir, f)
-                    if os.path.isdir(full) and re.match(r"^\d+$", f):
-                        msg_db = os.path.join(full, "nt_qq", "nt_db", "nt_msg.db")
-                        wal_db = msg_db + "-wal"
-                        if os.path.isfile(wal_db):
-                            mtime = os.path.getmtime(wal_db) + 1e9
-                        elif os.path.isfile(msg_db):
-                            mtime = os.path.getmtime(msg_db) + 1e6
-                        else:
-                            mtime = os.path.getmtime(full)
-                        matched_Candidates.append((mtime, f, full))
-            except Exception:
-                pass
-
-        if matched_Candidates:
-            matched_Candidates.sort(key=lambda x: x[0], reverse=True)
-            _, target_qq, data_dir = matched_Candidates[0]
+        if matched_candidates:
+            _, target_qq, data_dir = matched_candidates[0]
             self.data_root_entry.delete(0, "end")
             self.data_root_entry.insert(0, data_dir.replace("\\", "/"))
             self.acc_entry.delete(0, "end")
@@ -625,7 +552,7 @@ class QQToolGUI(ctk.CTk):
                 self.work_entry.insert(0, DEFAULT_WORKSPACE)
             if not self.output_entry.get().strip():
                 self.output_entry.insert(0, DEFAULT_WORKSPACE + "/output")
-        elif base_dirs:
+        elif self._discover_qq_base_dirs():
             self.log("⚠️ 未找到数字QQ号文件夹。")
         else:
             self.log("⚠️ 未找到 Tencent Files 数据目录（请手动浏览选择）。")
@@ -652,12 +579,7 @@ class QQToolGUI(ctk.CTk):
     def load_config(self):
         if os.path.exists(CONFIG_PATH):
             try:
-                try:
-                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                except UnicodeDecodeError:
-                    with open(CONFIG_PATH, "r", encoding="gbk") as f:
-                        cfg = json.load(f)
+                cfg = QQGuiService.load_config(CONFIG_PATH)
                 self.acc_entry.insert(0, cfg.get("account", ""))
                 self.exe_entry.insert(0, cfg.get("qq_exe", ""))
                 self.output_entry.insert(
@@ -695,12 +617,7 @@ class QQToolGUI(ctk.CTk):
             self.output_entry.insert(0, DEFAULT_WORKSPACE + "/output")
 
     def save_config(self):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                old = json.load(f)
-        except Exception:
-            old = {}
-
+        old = QQGuiService.load_config(CONFIG_PATH)
         cfg = {
             "root": self.work_entry.get().replace("\\", "/"),
             "account_root": self.data_root_entry.get().replace("\\", "/"),
@@ -718,8 +635,7 @@ class QQToolGUI(ctk.CTk):
             "_note": "由GUI自动生成 - 按需解密版",
         }
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            QQGuiService.save_config(cfg, CONFIG_PATH)
             self.log("✅ 配置已保存")
             return True
         except Exception as e:
@@ -727,34 +643,25 @@ class QQToolGUI(ctk.CTk):
             return False
 
     def get_python_exe(self):
-        if not FROZEN:
-            return sys.executable
-        exe_dir = os.path.dirname(sys.executable)
-        for cand in (
-            os.path.join(exe_dir, "python", "Scripts", "python.exe"),
-            os.path.join(exe_dir, "python", "python.exe"),
-            os.path.join(exe_dir, "runtime", "python.exe"),
-            os.path.join(exe_dir, "python.exe"),
-        ):
-            if os.path.exists(cand):
-                return cand
-        return None
+        return QQGuiService.get_python_exe(frozen=FROZEN)
 
     def _bg(self, fn, *args):
         threading.Thread(target=fn, args=args, daemon=True).start()
 
     def run_command(self, cmd, label=None):
-        if self.busy:
-            self.log("⚠️ 已有任务在运行，请等待完成或先点击「终止并总结」。")
-            return -2
-        py = self.get_python_exe()
-        if not py:
-            self.log("❌ 找不到随包分发的 Python 运行时。")
-            self.log(
-                "👉 请把完整的 venv 目录复制到 exe 同级并重命名为 python\\（必须保留 python\\pyvenv.cfg 和 python\\Lib\\site-packages）。"
-            )
-            return -3
-        self.busy = True
+        with self._state_lock:
+            if self.busy:
+                self.log("⚠️ 已有任务在运行，请等待完成或先点击「终止并总结」。")
+                return -2
+            py = self.get_python_exe()
+            if not py:
+                self.log("❌ 找不到随包分发的 Python 运行时。")
+                self.log(
+                    "👉 请把完整的 venv 目录复制到 exe 同级并重命名为 python\\（必须保留 python\\pyvenv.cfg 和 python\\Lib\\site-packages）。"
+                )
+                return -3
+            self.busy = True
+
         title = label or "执行任务"
         self.log(
             "\n>>> "
@@ -766,12 +673,13 @@ class QQToolGUI(ctk.CTk):
         )
         self.after(0, self._apply_begin, title)
         code = 1
+        proc = None
         try:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             env["NTQQ_CONFIG"] = CONFIG_PATH
             sp_kwargs = QQGuiService.get_subprocess_kwargs()
-            self.current_process = subprocess.Popen(
+            proc = subprocess.Popen(
                 [py] + cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -783,21 +691,25 @@ class QQToolGUI(ctk.CTk):
                 cwd=SCRIPTS_DIR,
                 **sp_kwargs,
             )
-            for line in self.current_process.stdout:
+            with self._state_lock:
+                self.current_process = proc
+            for line in proc.stdout:
                 line = line.rstrip("\r\n")
                 if line.startswith("@@PROGRESS|"):
                     self._on_progress(line[len("@@PROGRESS|") :])
                     continue
                 if line.strip():
                     self.log(line)
-            self.current_process.stdout.close()
-            code = self.current_process.wait()
+            proc.stdout.close()
+            code = proc.wait()
         except Exception as e:
             self.log(f"❌ 执行出错: {e}")
             code = 1
         finally:
-            self.current_process = None
-            self.busy = False
+            with self._state_lock:
+                if self.current_process is proc:
+                    self.current_process = None
+                self.busy = False
             self.after(0, self._apply_end, code == 0)
         if code == 0:
             self.log(f"✅ {title} 完成")
@@ -855,13 +767,7 @@ class QQToolGUI(ctk.CTk):
             return False
         self.last_html_path = target
         try:
-            norm_target = os.path.normpath(target)
-            if hasattr(os, "startfile"):
-                os.startfile(norm_target)
-            else:
-                import webbrowser
-                import pathlib
-                webbrowser.open(pathlib.Path(norm_target).as_uri())
+            QQGuiService.open_path(target)
             self.log(f"🌐 已在浏览器中打开可视化简报: {target}" + (f" (视图: {view})" if view else ""))
             return True
         except Exception as e:
@@ -869,6 +775,12 @@ class QQToolGUI(ctk.CTk):
             if not silent:
                 messagebox.showwarning("打开失败", f"无法打开 HTML 简报: {e}")
             return False
+
+    def _on_html_report_ready(self, html_file: str) -> None:
+        self.last_html_path = html_file
+        self.open_latest_html(html_file, silent=True)
+        if hasattr(self, "claude_win") and self.claude_win and self.claude_win.winfo_exists():
+            self.claude_win.load_latest_report()
 
     def run_report(self):
         if not self.acc_entry.get().strip():
@@ -911,10 +823,7 @@ class QQToolGUI(ctk.CTk):
         def _task():
             code = self.run_command(cmd, title)
             if code == 0 and os.path.exists(html_file):
-                self.last_html_path = html_file
-                self.open_latest_html(html_file, silent=True)
-                if hasattr(self, "claude_win") and self.claude_win and self.claude_win.winfo_exists():
-                    self.after(0, self.claude_win.load_latest_report)
+                self.after(0, self._on_html_report_ready, html_file)
 
         self._bg(_task)
 
@@ -927,12 +836,14 @@ class QQToolGUI(ctk.CTk):
             return
         days = self.get_selected_days()
         label_days = self.day_label(days)
+        work_dir = self.work_entry.get().replace("\\", "/")
+        out_dir = self.output_entry.get().replace("\\", "/")
 
         def sequence():
             self.log(
                 "\n========== 一键全自动开始（QQ 全程保持运行，无需关闭） =========="
             )
-            keys_dir = os.path.join(self.work_entry.get().replace("\\", "/"), "keys")
+            keys_dir = os.path.join(work_dir, "keys")
             os.makedirs(keys_dir, exist_ok=True)
             c1 = self.run_command(
                 [
@@ -954,7 +865,6 @@ class QQToolGUI(ctk.CTk):
             if c2 != 0:
                 self.log("❌ 索引构建失败，流程终止。")
                 return
-            out_dir = self.output_entry.get().replace("\\", "/")
             os.makedirs(out_dir, exist_ok=True)
             out_file = os.path.join(out_dir, "我的群聊简报_%s.md" % label_days)
             html_file = os.path.splitext(out_file)[0] + ".html"
@@ -971,26 +881,22 @@ class QQToolGUI(ctk.CTk):
                 "步骤 3/3 生成简报（%s）" % label_days,
             )
             if c3 == 0 and os.path.exists(html_file):
-                self.last_html_path = html_file
-                self.open_latest_html(html_file, silent=True)
-                if hasattr(self, "claude_win") and self.claude_win and self.claude_win.winfo_exists():
-                    self.after(0, self.claude_win.load_latest_report)
+                self.after(0, self._on_html_report_ready, html_file)
             self.log("========== 一键全自动完毕 ==========")
 
         self._bg(sequence)
 
     def stop_and_summarize(self):
-        if self.current_process and self.current_process.poll() is None:
+        with self._state_lock:
+            proc = self.current_process
+            self.current_process = None
+        if proc and proc.poll() is None:
             self.log("\n🛑 正在终止当前任务进程树（不影响 QQ）...")
             try:
-                parent = psutil.Process(self.current_process.pid)
-                for child in parent.children(recursive=True):
-                    child.kill()
-                parent.kill()
+                QQGuiService.terminate_process_tree(proc.pid)
                 self.log("✅ 任务进程已终止。")
             except Exception as e:
                 self.log(f"⚠️ 终止进程时出错: {e}")
-            self.current_process = None
         else:
             self.log("\n⚠️ 当前没有正在运行的任务进程。")
         self.after(0, self._apply_end, False)
@@ -1013,58 +919,8 @@ class QQToolGUI(ctk.CTk):
             return
         self.log(f"📁 找到索引数据库: {db_path}")
         try:
-            con = sqlite3.connect(db_path)
-            cur = con.cursor()
-            cur.execute("SELECT COUNT(*) FROM messages")
-            total_msgs = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM groups")
-            total_groups = cur.fetchone()[0]
-            if total_msgs == 0:
-                self.log("⚠️ 数据库中尚无消息记录。")
-                con.close()
-                return
-            cur.execute("SELECT MIN(day), MAX(day) FROM messages")
-            min_day, max_day = cur.fetchone()
-            meta = {}
-            try:
-                meta = {
-                    k: v for k, v in cur.execute("SELECT key, value FROM meta")
-                }
-            except sqlite3.DatabaseError:
-                pass
-            cur.execute(
-                "SELECT group_name, COUNT(*) FROM messages GROUP BY group_code ORDER BY COUNT(*) DESC LIMIT 5"
-            )
-            top_groups = cur.fetchall()
-            cur.execute(
-                "SELECT kind, COUNT(*) FROM messages GROUP BY kind ORDER BY COUNT(*) DESC"
-            )
-            kind_stats = cur.fetchall()
-            report = (
-                "\n================ 阶段结果总结报告 ================\n"
-                "🕒 生成时间: %s\n"
-                "📊 已处理消息总数: %d 条\n"
-                "👥 涉及群组数量: %d 个\n"
-                "📅 覆盖时间范围: %s 至 %s\n"
-                "⏱ 索引构建时间: %s（窗口 %s 天）\n\n"
-                "🔥 最活跃群组 Top 5:\n"
-            ) % (
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                total_msgs,
-                total_groups,
-                min_day,
-                max_day,
-                meta.get("built_at", "-"),
-                meta.get("window_days", "-"),
-            )
-            for g, c in top_groups:
-                report += "  - %s: %d 条消息\n" % (g if g else "未知群", c)
-            report += "\n📎 消息类型分布:\n"
-            for k, c in kind_stats:
-                report += "  - %s: %d 条\n" % (k, c)
-            report += "=================================================="
-            self.log(report)
-            con.close()
+            stats = QQGuiService.query_database_summary(db_path)
+            self.log(QQGuiService.format_database_summary(stats or {}))
         except Exception as e:
             self.log(f"❌ 总结时出错: {e}")
 
@@ -1085,17 +941,19 @@ class QQToolGUI(ctk.CTk):
             "--out",
             md_file,
         ]
+
         def _task():
             code = self.run_command(cmd, f"生成群聊 Wrapped 回顾（{label_days}）")
             if code == 0 and os.path.exists(wrapped_file):
-                import webbrowser
-                webbrowser.open(os.path.abspath(wrapped_file))
+                self.after(0, QQGuiService.open_path, wrapped_file)
                 self.log(f"🎉 Wrapped 回顾已生成并在浏览器中打开: {wrapped_file}")
+
         self._bg(_task)
 
     def run_obsidian_feature(self):
         if not self.save_config():
             return
+        days = self.get_selected_days()
         out_dir = self.output_entry.get().replace("\\", "/")
         os.makedirs(out_dir, exist_ok=True)
         obsidian_dir = os.path.join(out_dir, "obsidian")
@@ -1103,14 +961,18 @@ class QQToolGUI(ctk.CTk):
             os.path.join(SCRIPTS_DIR, "ntqq_report.py"),
             "--export",
             "obsidian",
+            "--hours",
+            str(days * 24),
             "--obsidian-vault",
             obsidian_dir,
         ]
+
         def _task():
             code = self.run_command(cmd, "导出至 Obsidian 第二大脑")
             if code == 0 and os.path.exists(obsidian_dir):
                 self.log(f"🎉 已成功导出 Obsidian 知识库至: {obsidian_dir}")
-                os.startfile(obsidian_dir)
+                self.after(0, QQGuiService.open_path, obsidian_dir)
+
         self._bg(_task)
 
     def run_links_actions_feature(self):
@@ -1134,12 +996,12 @@ class QQToolGUI(ctk.CTk):
             "--out",
             out_file,
         ]
+
         def _task():
             code = self.run_command(cmd, f"提取资源链接与待办决策（{label_days}）")
             if code == 0 and os.path.exists(html_file):
-                self.last_html_path = html_file
-                import webbrowser
-                webbrowser.open(os.path.abspath(html_file))
+                self.after(0, self._on_html_report_ready, html_file)
+
         self._bg(_task)
 
     def run_ocr_feature(self):
@@ -1148,7 +1010,49 @@ class QQToolGUI(ctk.CTk):
             "--batch-size",
             "50",
         ]
+
         def _task():
             self.run_command(cmd, "WinRT 智能本地 OCR 识图索引构建")
+
         self._bg(_task)
+
+
+def _report_smoke(msg: str) -> None:
+    try:
+        with open(os.path.join(APP_DIR, "smoke_result.txt"), "w", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+    print(msg)
+
+
+def _maybe_hide_console() -> None:
+    """If launched on Windows via python.exe without CLI arguments, hide redundant console window."""
+    if sys.platform == "win32" and not FROZEN and len(sys.argv) <= 1:
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                pids = (ctypes.c_uint * 2)()
+                count = ctypes.windll.kernel32.GetConsoleProcessList(pids, 2)
+                if count <= 1:
+                    ctypes.windll.user32.ShowWindow(hwnd, 0)
+        except Exception:
+            pass
+
+
+def main() -> None:
+    """Application entrypoint for GUI console/window launchers."""
+    _maybe_hide_console()
+    if "--self-test" in sys.argv:
+        app = QQToolGUI()
+        py = app.get_python_exe()
+        app.after(2500, app.destroy)
+        app.mainloop()
+        _report_smoke(
+            f"SELF-TEST OK\nFROZEN={FROZEN}\nAPP_DIR={APP_DIR}\nSCRIPTS_DIR={SCRIPTS_DIR}\nCONFIG_PATH={CONFIG_PATH}\nPYTHON={py}"
+        )
+    else:
+        app = QQToolGUI()
+        app.mainloop()
 
