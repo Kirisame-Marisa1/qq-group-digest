@@ -3,6 +3,27 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0-beta.2] - 2026-11-25
+
+### Security & Privacy
+- **HTML 报告模板安全加固 (`digest_report.html`)**: 收敛视图白名单，为所有动态链接增加 `safeUrl()` 协议校验，并将动态列表卡片切换、筛选项等交互改为 `data-action` 事件委托与纯文本写入 (`textContent`)，消除潜在 XSS 风险。
+- **报告脱敏完整性 (`ntqq_report.py`, `ntqq_html.py`)**: 补齐 `--ask`、`--structured`、`--links`、`--actions`、`--social`、`--wrapped` 及 `--export obsidian` 在 `--anonymize` 模式下的成员代号映射、群号脱敏与 `scrub()` 处理。
+- **媒体下载与路径安全 (`ntqq_core.py`, `ntqq_media.py`, `ntqq_obsidian.py`, `ntqq_links.py`)**: 强制校验证书白名单域 (`is_allowed_cdn_host`) 与 50MB 响应体上限；拦截 Obsidian 路径穿越与 Windows 保留设备名；修复域名后缀误匹配 (`notgithub.com`)。
+- **发布工具与 CI 安全门禁**: `tools/assemble_release.py` 禁止将本地真实 `config.json` 打入发行包并开启 `--strict` 审计校验；扩展 `tools/audit_outbound.py` 与 `.github/workflows/ci.yml` 覆盖 `.ps1`/`.js`/`.mjs`/`.html`/`gui/` 及隐私路径变体，新增 `compileall` 与静默只读静态审计步骤。
+
+### Fixed
+- **核心引擎与数据库 (`ntqq_core.py`, `ntqq_db.py`, `ntqq_decrypt.py`, `ntqq_crypto.py`, `ntqq_key.py`, `ntqq_snapshot.py`)**:
+  - 修复 Windows 小时间戳越界问题及 `_EPOCH_TZ` 零点时区偏移，统一 `safe_local_dt`；加严 `validate_config`（拒绝 `bool` 作为 `index_days`）与 `validate_sql_ident`。
+  - 修复 `ntqq_db.py` FTS5 外部内容表触发器缺失，启用 `PRAGMA recursive_triggers = ON` 并兼容 `ON CONFLICT DO UPDATE`；以 `rowid` keyset pagination 重写大表安全遍历；原子落盘全部核心配置与密钥文件。
+  - 加固 Windows Toolhelp 句柄清理 (`try...finally CloseHandle`)、快照目录异常回收、加密库解密页数校验与 WAL mtime 检测。
+- **解析与流式抽取 (`ntqq_parser.py`, `ntqq_slice.py`, `ntqq_build.py`)**: 修复 XML 卡片单引号与 HTML 实体反转义、`fallback_extract_strings` 分段截断丢失、24/48-bit 有符号整数解码、B-tree 内部页遍历序及 `--only-groups` 游标回退与 C2C 确定性主键问题。
+- **生态模块与报告 CLI (`ntqq_ocr.py`, `ntqq_glossary.py`, `ntqq_group_state.py`, `ntqq_summary_tree.py`, `ntqq_action_items.py`, `ntqq_social.py`, `ntqq_report_schema.py`, `ntqq_report.py`)**: 补齐 `ntqq_ocr.py` CLI 入口与递归遍历、修复 `--ask`/`--no-html`/`--hours 0`、修复 `sqlite3.Row` 兼容与社交图谱按 `group_code` 隔离。
+- **桌面 GUI 与启动入口 (`gui/`, `gui_app.py`, `scripts/gui_app.py*`)**: 移除 `gui/app.py` 未导入 `psutil`/`sqlite3` 导致的崩溃与跨线程 Tkinter 操作，引入 `self._state_lock` 并将系统检测、进程树终止与数据库统计下沉至 `QQGuiService`；修复 `scripts/gui_app.py*` `sys.path` 遮蔽自导入问题及统一默认工作区路径。
+
+### Changed & Packaging
+- 提取公共工具函数 (`row_to_dict`, `get_row_val`, `safe_local_dt`, `validate_sql_ident`, `atomic_write_text`, `atomic_write_json`, `AT_MENTION_RE`) 消除跨模块重复实现。
+- 更新 `pyproject.toml`（补齐 `py-modules`、修正 `ntqq-gui = "gui.app:main"`）、新增 `MANIFEST.in`、纳入 `gui_app.spec` 版本追踪，并同步更新 `config.example.json`、`README.md` 与 `docs/ARCHITECTURE.md`。
+
 ## [1.7.0-beta.1] - 2026-11-04
 
 ### Added (Ecosystem Evolution Beta)

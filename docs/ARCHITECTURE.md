@@ -26,19 +26,18 @@ Tree X page Y cell Z: invalid page number ...
 
 校验解密是否正确的最快方法：用 page1 的 HMAC-SHA1 验证密钥；再用 `sqlite_master` 能否读出表名验证页面格式。
 
-## 2. 为什么不能靠 rowid 排序取数据
+## 2. 索引与流式抽取设计
 
-`group_msg_table` 的主键 `40001` 是消息 ID，看起来像雪花 ID，
-但**实测同一时刻的消息 rowid 可以相差上千万亿**，与时间不是严格同序。
+`group_msg_table` 的主键 `40001` 是消息 ID，实测在同一时刻的消息 `rowid` 可能跳跃较大，不能假设全表严格递增。
+当前架构提供三档协同抽取方式（`ntqq_build.py`）：
 
-所以取数必须走索引 `group_msg_table_idx40027_40058`（群 + 日期），
-即「按群 + 按天」查询，而不是「按 rowid 倒序扫」。
+1. **`--source stream`（默认流式抽取）**：通过 `ntqq_slice.py` 直接在源库页面（含 `-wal` 安全快照 `ntqq_snapshot.py`）按页解密并逆序遍历 B-tree 叶子页（`40050` 时间戳），一旦连续超过安全余量超出时间窗即早停，避免将整个 4GB+ 库解密为明文再扫全表。
+2. **`--source wal` / `--source sql`（传统 SQL 回退）**：通过 `ntqq_decrypt.py` 逐页流式解密为明文副本后，以 keyset pagination（`rowid < last_rowid`）安全遍历并写入本地滚动索引 `index.db`。
+3. **滚动索引与 FTS5 同步**：`index.db` 在 `ntqq_db.py` 中维护 `messages` / `groups` / `c2c_messages` / `c2c_groups` / `media_ocr` / `micro_digests` 表，并通过 `PRAGMA recursive_triggers = ON` 与 FTS5 `AFTER INSERT/DELETE/UPDATE` 触发器保持 `messages_fts` 实时一致。
 
-## 3. WAL
+## 3. WAL 与一致性快照
 
-源库是 WAL 模式（文件头 offset 18/19 = 2）。
-只解密主库文件时，最新一小段（通常不到 1 分钟）可能还在 `-wal` 里没落盘。
-本工具不做 WAL 合并，而是在报告里如实给出「数据截止时间」。
+源库为 WAL 模式（文件头 offset 18/19 = 2）。`ntqq_snapshot.py` 在抽取前会短暂、只读地将 `nt_msg.db`、`nt_msg.db-wal`、`nt_msg.db-shm` 一并复制到独立临时工作目录后再解密分析，既绝不写入源库，也能覆盖尚未 checkpoint 回主库的最新消息；如遇短暂文件锁竞争则自动退避重试并在退出时清理临时快照。
 
 ## 4. 转发消息
 
@@ -54,25 +53,26 @@ Tree X page Y cell Z: invalid page number ...
 | `40093` / `40094` | 昵称 / 群名片 |
 | `40800` | 该条消息的正文 Protobuf |
 
-实测一条 71,700 字节的 `40900` 里含约 55 条被转发的消息。
+`ntqq_parser.py` 的 `forward_text()` 会遍历每条子记录 `40800` 的全部叶子节点而非仅首段，避免因引用段或图片段排在首位而丢失正文；内嵌的 XML 卡片同时兼容单双引号与 HTML 实体反转义。
 
-## 5. 图片直连
+## 5. 三级媒体获取与本地 OCR
 
-```
-https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0
-```
+1. **多媒体 CDN（原图主力）**：从消息 `40800` 提取 `45816`（host）与 `45802/45803/45804`（`/download?appid=1407&fileid=...&spec=0`），并通过 `ntqq_core.is_allowed_cdn_host()` 校验主机白名单，结合 `ntqq_key.scan_rkeys()` 内存扫出的会话 `rkey` 拉取并核验 MD5 与文件魔数扩展名。
+2. **本机缓存** `nt_data\Pic\`：按文件大小择优匹配（若 `--prefer-local` 则优先），用于已渲染图片的快速命中。
+3. **旧 gchat 兜底**：`https://gchat.qpic.cn/gchatpic_new/0/0-0-<MD5大写>/0`。
+4. **WinRT 本地 OCR（`ntqq_ocr.py` + `winrt_ocr.ps1`）**：纯本地调用 Windows Runtime OCR 识别群图文字并缓存至 `media_ocr`，与 `ntqq_report.py --search` 联动检索。
 
-- 消息里 `40800` 的 `45406` 字段是 16 字节图片 md5，`45405` 是文件大小。
-- 上式的响应字节数与 `45405` 完全一致，且文件 MD5 等于 `45406`，即**原图**。
-- 实测 40 张抽样：13/16 成功、3 张 404；班群 35 张：33 张成功（94%）。
-- 失败全是 404 —— 腾讯服务端已清理。
-- **必须按文件头 magic 判断真实格式**：QQ 的 `Thumb` 文件经常「文件名是 .jpg，内容其实是 PNG/GIF」，不修正就读不出来。
+## 6. 生态分析、HTML 渲染与安全边界
 
-## 6. 版本漂移
+- **结构化分析管线**：`ntqq_normalizer.py`（消息降噪与刷屏折叠）→ `ntqq_segmenter.py`（话题分段）→ `ntqq_summary_tree.py`（微摘要树缓存）→ `ntqq_report_schema.py`（结构化与可溯源 `[Ref: #seq]` 简报）。
+- **扩展洞察模块**：`ntqq_links.py`（资源/外链与跟踪参数清洗）、`ntqq_action_items.py`（待办/决议雷达）、`ntqq_social.py`（群友互动拓扑）、`ntqq_wrapped.py`（Chat Wrapped 回顾）、`ntqq_obsidian.py`（Obsidian Vault 导出与路径穿越防护）。
+- **离线多视图 HTML（`ntqq_html.py` + `templates/digest_report.html`）**：通过 `<script type="application/json">` 安全序列化及基于 `data-action` 的事件委托渲染 5 种离线视图，防止消息正文注入脚本。
+
+## 7. 版本漂移
 
 `schema/ntqq-<版本>.json` 里除字段映射外还有一个 `structure`（首次运行自动写入），
 是 `sqlite_master` 的表/列清单。`ntqq_build.py` 每次比对，不一致就：
 1. 以 exit code 3 停止（**不产出任何总结**，避免基于错列瞎编）
 2. 写出 `run/schema_report.md`
 
-重新解析的判据见 `SKILL.md` 第 7 节。
+重新解析的判据见 `.agents/skills/qq-group-digest/SKILL.md` 第 7 节。

@@ -15,6 +15,7 @@ dist/
 build_tmp/
 release_pkg/
 *.spec
+!gui_app.spec
 smoke_result.txt
 
 *.egg-info/

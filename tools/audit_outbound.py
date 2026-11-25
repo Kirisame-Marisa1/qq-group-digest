@@ -14,17 +14,26 @@ import argparse, os, subprocess, sys
 from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOTS = [os.path.join(HERE, '..', 'scripts'), HERE]
+REPO_ROOT = os.path.abspath(os.path.join(HERE, '..'))
+ROOTS = [
+    os.path.join(REPO_ROOT, 'scripts'),
+    os.path.join(REPO_ROOT, 'gui'),
+    HERE,
+    os.path.join(REPO_ROOT, 'injector'),
+]
 ALLOW = ('multimedia.nt.qq.com.cn', 'gchat.qpic.cn', 'qpic.cn', 'qq.com')
-SKIP_DIRS = ('__pycache__',)
+SKIP_DIRS = ('__pycache__', 'out')
+SCAN_EXTS = ('.py', '.pyw', '.ps1', '.js', '.mjs', '.html')
 
 
-def iter_py():
+def iter_files():
     for root in ROOTS:
+        if not os.path.isdir(root):
+            continue
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
             for fn in filenames:
-                if fn.endswith('.py'):
+                if fn.endswith(SCAN_EXTS):
                     yield os.path.join(dirpath, fn)
 
 
@@ -60,8 +69,8 @@ def looks_like_host(h):
 
 def static():
     found = {}
-    for p in iter_py():
-        rel = os.path.relpath(p, os.path.join(HERE, '..'))
+    for p in iter_files():
+        rel = os.path.relpath(p, REPO_ROOT)
         with open(p, encoding='utf-8', errors='replace') as fh:
             for n, line in enumerate(fh, 1):
                 for h in hosts_in(line):

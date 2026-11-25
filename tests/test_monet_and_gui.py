@@ -7,7 +7,7 @@ import gui.themes as themes
 import gui_app
 
 
-def test_html_monet_script_syntax():
+def test_html_monet_script_syntax(tmp_path):
     """验证生成的 HTML 中包含的 JavaScript 在 Node 环境下无任何语法错误。"""
     sample_payload = {
         "mode": "digest",
@@ -31,15 +31,10 @@ def test_html_monet_script_syntax():
     scripts = re.findall(r'<script.*?>([\s\S]*?)</script>', html)
     assert len(scripts) >= 2
     js_content = scripts[1]
-    tmp_path = "tmp_check_monet.js"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(js_content)
-    try:
-        res = subprocess.run(["node", "-c", tmp_path], capture_output=True, text=True)
-        assert res.returncode == 0, f"Node.js syntax error: {res.stderr}"
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    js_check_file = tmp_path / "tmp_check_monet.js"
+    js_check_file.write_text(js_content, encoding="utf-8")
+    res = subprocess.run(["node", "-c", str(js_check_file)], capture_output=True, text=True)
+    assert res.returncode == 0, f"Node.js syntax error: {res.stderr}"
 
 
 def test_html_template_file_integrity():

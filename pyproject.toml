@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qq-group-digest"
-version = "1.7.0-beta.1"
+version = "1.7.0-beta.2"
 description = "把 QQ 群聊与私聊变成可检索、可统计、可总结的本地资料库（全程本地、只读、不登录）"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -48,9 +48,10 @@ ntqq-media = "ntqq_media:main"
 ntqq-glossary = "ntqq_glossary:main"
 ntqq-group-state = "ntqq_group_state:main"
 ntqq-slice = "ntqq_slice:main"
-ntqq-gui = "gui_app:main"
+ntqq-gui = "gui.app:main"
 
 [tool.setuptools]
+include-package-data = true
 package-dir = {"" = "scripts", "gui" = "gui"}
 packages = ["gui"]
 py-modules = [
@@ -75,6 +76,12 @@ py-modules = [
     "ntqq_segmenter",
     "ntqq_summary_tree",
     "ntqq_report_schema",
+    "ntqq_links",
+    "ntqq_action_items",
+    "ntqq_ocr",
+    "ntqq_social",
+    "ntqq_wrapped",
+    "ntqq_obsidian",
 ]
 
 [tool.pytest.ini_options]

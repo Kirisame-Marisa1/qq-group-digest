@@ -85,54 +85,45 @@ def test_src_decryption_with_cached_algo():
 
 
 def test_early_stop_mechanism():
-    """验证逆序遍历在检测到连续超出时间窗口阈值（STOP_THRESHOLD）时能够立即提前终止。"""
-    now_ts = 1700000000
-    cutoff_ts = now_ts - 7 * 86400  # 7 天前
+    """验证 ntqq_build.should_early_stop_stream 在检测到连续超出窗口阈值时触发提前终止。"""
+    from scripts.ntqq_build import should_early_stop_stream
 
-    stream_data = []
-    # 7 天内消息（合格）
-    for i in range(100):
-        stream_data.append((1000 - i, now_ts - i * 3600))
-    # 7 天前消息（过期）
-    for i in range(500):
-        stream_data.append((900 - i, cutoff_ts - (i + 1) * 3600))
-
-    STOP_THRESHOLD = 50
+    scan_day0 = 20261025
+    stream_days = [20261026] * 5 + [20261020] * 100
     consecutive_old = 0
-    scanned = 0
     kept = 0
+    scanned = 0
 
-    for rowid, msg_ts in stream_data:
+    for msg_day in stream_days:
         scanned += 1
-        if msg_ts < cutoff_ts:
-            consecutive_old += 1
-            if consecutive_old >= STOP_THRESHOLD:
-                # 提前终止！
-                break
-            continue
-        else:
-            consecutive_old = 0
-        kept += 1
+        should_break, consecutive_old, skip_row = should_early_stop_stream(
+            msg_day, scan_day0, consecutive_old, kept, stop_threshold=20
+        )
+        if should_break:
+            break
+        if not skip_row:
+            kept += 1
 
-    assert kept == 100
-    # 总共只扫描了 100 条有效消息 + 50 条阈值探测消息 = 150 条，剩余 450 条陈旧消息完全跳过！
-    assert scanned == 100 + STOP_THRESHOLD
-    assert scanned < len(stream_data)
+    assert kept == 5
+    assert scanned == 5 + 20
+    assert scanned < len(stream_days)
 
 
 def test_stream_source_option_and_defaults():
-    """验证 ntqq_build 命令行参数 --source auto/stream/sql 选项解析正确。"""
-    import argparse
-    from scripts.ntqq_build import main
+    """验证真实 ntqq_build.build_argument_parser 命令行参数解析。"""
+    from scripts.ntqq_build import build_argument_parser
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--source', choices=('auto', 'sql', 'stream', 'snap'), default='auto')
+    ap = build_argument_parser()
 
     args_default = ap.parse_args([])
     assert args_default.source == 'auto'
+    assert args_default.window is None
+    assert args_default.only_groups is None
 
-    args_sql = ap.parse_args(['--source', 'sql'])
+    args_sql = ap.parse_args(['--source', 'sql', '--only-groups', '123,456'])
     assert args_sql.source == 'sql'
+    assert args_sql.only_groups == '123,456'
 
-    args_stream = ap.parse_args(['--source', 'stream'])
+    args_stream = ap.parse_args(['--source', 'stream', '--window', '30d'])
     assert args_stream.source == 'stream'
+    assert args_stream.window == '30d'

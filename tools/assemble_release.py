@@ -52,13 +52,16 @@ def _get_site_packages():
 SYS_SITE_PACKAGES = _get_site_packages()
 
 REQUIRED_PACKAGES = [
+    "cryptography",
+    "cffi",
     "pydantic",
     "pydantic_core",
     "annotated_types",
     "typing_extensions.py",
     "typing_inspection",
     "PIL",
-    "google",
+    "customtkinter",
+    "psutil",
 ]
 
 
@@ -81,11 +84,8 @@ def assemble():
         if os.path.exists(src_extra):
             shutil.copy2(src_extra, os.path.join(RELEASE_PKG, extra_file))
     
-    cfg_real = os.path.join(BASE_DIR, "config.json")
     cfg_src = os.path.join(BASE_DIR, "config.example.json")
-    if os.path.exists(cfg_real):
-        shutil.copy2(cfg_real, os.path.join(RELEASE_PKG, "config.json"))
-    elif os.path.exists(cfg_src):
+    if os.path.exists(cfg_src):
         shutil.copy2(cfg_src, os.path.join(RELEASE_PKG, "config.json"))
     else:
         sanitized = {
@@ -129,7 +129,7 @@ def assemble():
     py_exe = os.path.join(target_python, "python.exe")
     check_code = """
 import sys
-for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
+for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'customtkinter', 'psutil']:
     try:
         m = __import__(mod)
         print(f"  [OK] {mod} -> {getattr(m, '__file__', 'builtin')}")
@@ -146,8 +146,19 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
 
     print(">>> 6. 验证各个演进模块脚本在独立运行时下的可执行性...")
     test_scripts = [
+        "ntqq_core.py",
         "ntqq_crypto.py",
         "ntqq_db.py",
+        "ntqq_init.py",
+        "ntqq_build.py",
+        "ntqq_report.py",
+        "ntqq_html.py",
+        "ntqq_key.py",
+        "ntqq_decrypt.py",
+        "ntqq_slice.py",
+        "ntqq_media.py",
+        "ntqq_glossary.py",
+        "ntqq_group_state.py",
         "ntqq_snapshot.py",
         "ntqq_parser.py",
         "ntqq_vision_filter.py",
@@ -155,6 +166,12 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
         "ntqq_segmenter.py",
         "ntqq_summary_tree.py",
         "ntqq_report_schema.py",
+        "ntqq_links.py",
+        "ntqq_action_items.py",
+        "ntqq_ocr.py",
+        "ntqq_social.py",
+        "ntqq_wrapped.py",
+        "ntqq_obsidian.py",
     ]
     for s in test_scripts:
         script_path = os.path.join(RELEASE_PKG, "scripts", s)
@@ -165,6 +182,11 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
             sys.exit(1)
         else:
             print(f"  [OK] {s} 依赖检查通过")
+
+    tpl_path = os.path.join(RELEASE_PKG, "scripts", "templates", "digest_report.html")
+    if not os.path.isfile(tpl_path):
+        print(f"错误: 缺少 HTML 模板文件: {tpl_path}")
+        sys.exit(1)
 
     print(">>> 7. 验证打包后的 GUI 应用自检 (--self-test)...")
     res_gui = subprocess.run([os.path.join(RELEASE_PKG, "gui_app.exe"), "--self-test"], capture_output=True, text=True)
@@ -207,8 +229,13 @@ for mod in ['cryptography', 'cffi', 'pydantic', 'PIL', 'google.protobuf']:
     print(">>> 10. 运行 tools/audit_package.py 审计压缩包...")
     audit_script = os.path.join(BASE_DIR, "tools", "audit_package.py")
     if os.path.exists(audit_script):
-        r_audit = subprocess.run([sys.executable, audit_script, OUTPUT_ZIP], capture_output=True, text=True)
+        r_audit = subprocess.run([sys.executable, audit_script, OUTPUT_ZIP, "--strict"], capture_output=True, text=True)
         print(r_audit.stdout)
+        if r_audit.returncode != 0:
+            print("错误: 发行包安全审计未通过!")
+            if r_audit.stderr:
+                print(r_audit.stderr)
+            sys.exit(1)
 
     print("\n🎉 装配与多重自检全部顺利通过！")
 

@@ -63,9 +63,11 @@
 需要：Windows + 本机 QQ（NTQQ 版本）+ Python 3.10+。
 
 ```bash
-pip install cryptography
-# 或者直接按 pyproject.toml 安装命令行入口：
-pip install -e .
+pip install cryptography pydantic Pillow
+# 若需使用桌面 GUI 客户端：
+pip install -e ".[gui]"
+# 或者安装完整开发环境（含 pytest 与 GUI）：
+pip install -e ".[dev,gui]"
 ```
 
 把仓库放到任意位置，推荐使用**一键初始化向导**自动发现本机 QQ 号与安装路径：
@@ -184,10 +186,10 @@ python scripts/ntqq_group_state.py --list
 python scripts/ntqq_group_state.py --list --in-group
 python scripts/ntqq_group_state.py --left <群号或群名片段>    # 手工补记一个已退的群
 
-# 缺口体检与按 seq 补缺口（L1a / L1b：自建加载器 selfloader，零常驻、无本地监听端口）
+# 可选：缺口体检与按 seq 补缺口（L1a 只读体检；L1b 自建加载器仅在用户显式执行时临时拉取缺口并恢复官方 QQ）
 python tools/gap_audit.py --days 30 --top 18                                  # 体检静默窗口、逐日总量与 seq 覆盖率
 python tools/gap_plan.py --days 30                                            # 生成合并扫描段后的缺口表 injector/out/fill-plan.json
-powershell -ExecutionPolicy Bypass -File injector/run_selfloader.ps1          # 一键独立加载器注入取回 + SHA256 复检 + 恢复官方 QQ
+powershell -ExecutionPolicy Bypass -File injector/run_selfloader.ps1          # 可选独立加载器注入取回 + SHA256 复检 + 恢复官方 QQ
 python scripts/ntqq_build.py --window 30d --source stream                     # 按需流式解密重建索引
 python tools/import_filled.py                                                 # 合并 filled-messages.jsonl 兜底副本入库
 python tools/coverage_check.py --days 30 --top 25                             # 四口径覆盖率验收（大段缺口归零即 100%）
@@ -273,11 +275,11 @@ python tools/purge_filled.py                                                  # 
 
 ## 给 AI Agent 用
 
-仓库里的 [SKILL.md](SKILL.md) 是一份可直接放进 Agent 技能目录的说明，
+仓库里的 [SKILL.md](.agents/skills/qq-group-digest/SKILL.md) 是一份可直接放进 Agent 技能目录的说明，
 定义了铁律（必须声明数据截止时间、取不到就明说、图片必须报覆盖率）、
 标准流程、输出格式、以及 QQ 版本升级后如何重新解析私有表结构。
 
-把它放到你的技能目录（例如 DSH 的 `~/.dsh/skills/qq-group-digest/SKILL.md`），
+把它放到你的技能目录（例如 `~/.agents/skills/qq-group-digest/SKILL.md`），
 Agent 就能在你说「总结一下 XX 群最近一周」时自动跑通全流程。
 
 ---

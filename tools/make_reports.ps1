@@ -12,12 +12,12 @@
 
 param(
   [string]$Since   = '2026-10-01 00:00',
-  [string]$OutDir  = 'D:\QQChatCache\output\oct2026-final',
+  [string]$OutDir  = 'D:\QQChatCache\output\reports',
   [int]$MinMsgs    = 1,
   [int]$MaxChars   = 8000000
 )
 
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Stop'
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = 'python' }
 $app = Split-Path -Parent $PSScriptRoot
@@ -47,6 +47,11 @@ foreach ($c in $codes) {
   $i++
   & $py -X utf8 'scripts\ntqq_report.py' --group $c --since $Since --max-msgs 100000 --max-chars $MaxChars `
       --out (Join-Path $OutDir ($c + '.md')) *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Pop-Location
+    Write-Error ("report generation failed for group {0} (exit code {1})" -f $c, $LASTEXITCODE)
+    exit $LASTEXITCODE
+  }
 }
 Pop-Location
 

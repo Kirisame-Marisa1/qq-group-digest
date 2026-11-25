@@ -94,6 +94,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('path')
     ap.add_argument('--show', type=int, default=8, help='每组最多列几条（默认 8）')
+    ap.add_argument('--strict', action='store_true', help='若 A 或 B 存在命中则返回非零退出码')
     a = ap.parse_args()
     hits, nf, nb = scan(a.path)
     print('== 审计 %s ==' % a.path)
@@ -107,10 +108,12 @@ def main():
         if len(v) > a.show:
             print('   ...（还有 %d 处）' % (len(v) - a.show))
         print('')
-    verdict = '⚠ 先人工看完 A / B 再决定' if (hits['A'] or hits['B']) else '启发式检查无命中（不等于安全）'
+    has_risk = bool(hits['A'] or hits['B'])
+    verdict = '⚠ 先人工看完 A / B 再决定' if has_risk else '启发式检查无命中（不等于安全）'
     print('结论：%s' % verdict)
+    return 1 if (a.strict and has_risk) else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
 

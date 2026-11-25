@@ -25,6 +25,11 @@ jobs:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
 
+    - name: Set up Node.js (for HTML JS syntax tests)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -34,14 +39,15 @@ jobs:
       run: |
         python -c "
         import os, re, sys
-        user_path_pattern = re.compile(r'C:\\\\Users\\\\(?!Public|runneradmin|Default|All Users)[a-zA-Z0-9_\-]+', re.IGNORECASE)
+        user_path_pattern = re.compile(r'C:(?:\\\\|/)Users(?:\\\\|/)(?!Public|runneradmin|Default|All Users|YOUR_NAME)[a-zA-Z0-9_\-]+', re.IGNORECASE)
         leaks = []
+        exts = ('.py', '.pyw', '.ps1', '.js', '.mjs', '.html', '.json', '.spec', '.md', '.yml', '.yaml', '.toml')
         for root, dirs, files in os.walk('.'):
-            dirs[:] = [d for d in dirs if d not in ['.git', 'build', 'dist', '__pycache__', '.pytest_cache', '.agents', 'release_pkg']]
+            dirs[:] = [d for d in dirs if d not in ['.git', 'build', 'build_tmp', 'dist', '__pycache__', '.pytest_cache', '.agents', 'release_pkg']]
             for f in files:
-                if f.endswith(('.py', '.json', '.spec', '.md', '.yml', '.yaml')):
+                if f.endswith(exts):
                     path = os.path.join(root, f)
-                    if os.path.basename(path) == 'config.json':
+                    if os.path.basename(path) in ('config.json', 'smoke_result.txt'):
                         continue  # local gitignored file
                     try:
                         with open(path, 'r', encoding='utf-8', errors='ignore') as fp:
@@ -57,6 +63,12 @@ jobs:
             sys.exit(1)
         print('Privacy Guard: All files clean and free of private identifiers.')
         "
+
+    - name: Static Audits & Compile Check
+      run: |
+        python -m compileall -q scripts gui tools tests
+        python tools/audit_outbound.py
+        python tools/audit_qq_untouched.py --static
 
     - name: Run Test Suite
       run: |

@@ -1,0 +1,7 @@
+include README.md LICENSE config.example.json CHANGELOG.md
+recursive-include schema *.json
+recursive-include scripts *.ps1
+recursive-include scripts/templates *.html
+recursive-include gui *.py
+recursive-include docs *.md
+global-exclude __pycache__ *.py[co]
